@@ -48,6 +48,12 @@ export const docs: Doc[] = [
   { id: 'd6', name: '传智杯评审细则（扫描版）.pdf', space: '项目资料', type: 'PDF', size: '3.1 MB', chunks: 0, status: 'failed', time: '2026-10-10 16:44' },
   { id: 'd7', name: 'Embedding模型性能测试报告.docx', space: '技术文档', type: 'Word', size: '1.2 MB', chunks: 64, status: 'done', time: '2026-10-09 11:12' },
   { id: 'd8', name: '产品FAQ常见问题汇总.md', space: '产品手册', type: 'Markdown', size: '88 KB', chunks: 96, status: 'done', time: '2026-10-08 15:30' },
+  { id: 'd9', name: '新员工入职培训手册.pdf', space: '公司规章', type: 'PDF', size: '3.6 MB', chunks: 88, status: 'done', time: '2026-10-08 14:02' },
+  { id: 'd10', name: 'Qdrant集群部署运维指南.md', space: '技术文档', type: 'Markdown', size: '64 KB', chunks: 26, status: 'done', time: '2026-10-07 10:18' },
+  { id: 'd11', name: '产品路线图2026Q4.pptx', space: '产品手册', type: 'PPT', size: '8.2 MB', chunks: 54, status: 'done', time: '2026-10-07 09:30' },
+  { id: 'd12', name: '出差差旅报销标准.xlsx', space: '公司规章', type: 'Excel', size: '210 KB', chunks: 12, status: 'done', time: '2026-10-06 16:45' },
+  { id: 'd13', name: '客户需求调研报告合集.docx', space: '项目资料', type: 'Word', size: '5.4 MB', chunks: 132, status: 'done', time: '2026-10-05 11:26' },
+  { id: 'd14', name: '向量检索性能优化实践.pdf', space: '技术文档', type: 'PDF', size: '2.7 MB', chunks: 74, status: 'done', time: '2026-10-05 09:14' },
 ]
 
 // ---------- 会话 ----------
@@ -55,14 +61,23 @@ export interface Session {
   id: string
   title: string
   group: '今天' | '昨天' | '更早'
+  pinned?: boolean
+  pinnedAt?: number
 }
 
 export const sessions: Session[] = [
   { id: 's1', title: 'RAG 检索增强生成的核心原理', group: '今天' },
   { id: 's2', title: '新员工报销流程怎么走', group: '今天' },
-  { id: 's3', title: '向量数据库 Milvus vs Qdrant', group: '昨天' },
+  { id: 's6', title: 'Embedding 模型怎么选型', group: '今天' },
+  { id: 's7', title: '怎么评估问答系统的准确率', group: '今天' },
+  { id: 's3', title: '向量数据库 Milvus vs Qdrant', group: '昨天', pinned: true, pinnedAt: 1760300000000 },
   { id: 's4', title: '年假天数与请假规则', group: '昨天' },
-  { id: 's5', title: '系统响应慢如何排查', group: '更早' },
+  { id: 's8', title: '知识库权限如何设计', group: '昨天' },
+  { id: 's9', title: 'Prompt 模板优化技巧', group: '昨天' },
+  { id: 's5', title: '系统响应慢如何排查', group: '更早', pinned: true, pinnedAt: 1760400000000 },
+  { id: 's10', title: 'PDF 解析失败的常见原因', group: '更早' },
+  { id: 's11', title: '混合检索 vs 纯向量检索', group: '更早' },
+  { id: 's12', title: '如何批量导入历史文档', group: '更早' },
 ]
 
 // ---------- 消息与引用 ----------

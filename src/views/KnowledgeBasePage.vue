@@ -5,7 +5,12 @@
  * - 文档上传（拖拽 / 点击）、下载、重命名、删除
  * - 解析状态实时反馈：排队中 → 切片 → 向量化 → 完成 / 失败
  */
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, watch } from 'vue'
+import { ElSelect, ElOption, ElPagination, ElConfigProvider } from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/pagination/style/css'
 import AppIcon from '@/components/AppIcon.vue'
 import {
   spaces as mockSpaces,
@@ -19,19 +24,18 @@ import {
 const spaces = ref<Space[]>([...mockSpaces])
 const activeSpace = ref<'all' | string>('all')
 const showNewSpace = ref(false)
-const newSpaceForm = reactive({ name: '', desc: '' })
+const newSpaceForm = reactive({ name: '' })
 
 function createSpace() {
   if (!newSpaceForm.name.trim()) return
   spaces.value.push({
     id: 'sp' + Date.now(),
     name: newSpaceForm.name.trim(),
-    desc: newSpaceForm.desc.trim() || '暂无描述',
+    desc: '暂无描述',
     docCount: 0,
     vectorCount: 0,
   })
   newSpaceForm.name = ''
-  newSpaceForm.desc = ''
   showNewSpace.value = false
 }
 
@@ -45,6 +49,18 @@ const filteredDocs = computed(() =>
       d.name.toLowerCase().includes(docSearch.value.trim().toLowerCase())
   )
 )
+
+// ---------- 分页（10 / 20 / 30 每页） ----------
+const page = ref(1)
+const pageSize = ref(10)
+const pagedDocs = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredDocs.value.slice(start, start + pageSize.value)
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredDocs.value.length / pageSize.value)))
+// 切换筛选条件 / 每页条数时回到第一页；删除后若当前页超界则回退
+watch([docSearch, activeSpace, pageSize], () => { page.value = 1 })
+watch(totalPages, () => { if (page.value > totalPages.value) page.value = totalPages.value })
 
 // 统计
 const totalChunks = computed(() => allDocs.value.reduce((s, d) => s + d.chunks, 0))
@@ -117,10 +133,15 @@ function confirmRename() {
   }
   renameTarget.value = null
 }
+// 删除改为确认弹窗（替代原生 confirm）
+const deleteTarget = ref<Doc | null>(null)
 function removeDoc(doc: Doc) {
-  if (confirm(`确定删除「${doc.name}」吗？其向量数据将一并清除。`)) {
-    allDocs.value = allDocs.value.filter((d) => d.id !== doc.id)
-  }
+  deleteTarget.value = doc
+}
+function confirmDelete() {
+  const t = deleteTarget.value
+  if (t) allDocs.value = allDocs.value.filter((d) => d.id !== t.id)
+  deleteTarget.value = null
 }
 function downloadDoc(doc: Doc) {
   // 演示：生成文本文件下载
@@ -153,7 +174,8 @@ const statusDot: Record<Doc['status'], string> = {
 </script>
 
 <template>
-  <div class="page">
+  <ElConfigProvider :locale="zhCn">
+    <div class="page">
     <!-- 页头 -->
     <header class="page-head">
       <div>
@@ -166,6 +188,33 @@ const statusDot: Record<Doc['status'], string> = {
         <div class="chip tint-mint"><b>{{ spaces.length }}</b> 个知识空间</div>
       </div>
     </header>
+
+    <!-- 上传区（点击任意处或拖拽均可上传） -->
+    <div
+      class="upload-zone"
+      :class="{ dragging }"
+      role="button"
+      tabindex="0"
+      aria-label="上传文档：点击选择文件或拖拽到此处"
+      @click="pickFiles"
+      @keydown.enter.prevent="pickFiles"
+      @dragover.prevent="dragging = true"
+      @dragleave="dragging = false"
+      @drop.prevent="onDrop"
+    >
+      <div class="upload-icon"><AppIcon name="upload" :size="30" /></div>
+      <div>
+        <div class="h4">拖拽文件到此处，或 <span class="link-text">点击上传</span></div>
+        <p class="text-sm mt-xs">支持 PDF / Word / Markdown / TXT / PPT，单文件不超过 20MB</p>
+      </div>
+      <div class="upload-target" @click.stop>
+        <span class="upload-target-label">上传到：</span>
+        <ElSelect v-model="targetSpace" class="upload-select" size="large" popper-class="kb-select-popper">
+          <ElOption v-for="sp in spaces" :key="sp.id" :label="sp.name" :value="sp.name" />
+        </ElSelect>
+      </div>
+      <input ref="fileInput" type="file" multiple hidden accept=".pdf,.doc,.docx,.md,.txt,.xlsx,.pptx" @change="onFileChange" />
+    </div>
 
     <!-- 空间切换 -->
     <div class="flex items-center justify-between flex-wrap gap-sm mb-md">
@@ -186,25 +235,6 @@ const statusDot: Record<Doc['status'], string> = {
       <button class="btn btn-secondary btn-sm" @click="showNewSpace = true">
         <AppIcon name="plus" :size="14" /> 新建知识空间
       </button>
-    </div>
-
-    <!-- 上传区 -->
-    <div
-      class="upload-zone"
-      :class="{ dragging }"
-      @dragover.prevent="dragging = true"
-      @dragleave="dragging = false"
-      @drop.prevent="onDrop"
-    >
-      <div class="upload-icon"><AppIcon name="upload" :size="26" /></div>
-      <div>
-        <div class="h4">拖拽文件到此处，或 <span class="link-text pointer" @click="pickFiles">点击上传</span></div>
-        <p class="text-sm mt-xs">支持 PDF / Word / Markdown / TXT / PPT，单文件不超过 20MB</p>
-      </div>
-      <select v-model="targetSpace" class="select upload-select">
-        <option v-for="sp in spaces" :key="sp.id" :value="sp.name">上传到：{{ sp.name }}</option>
-      </select>
-      <input ref="fileInput" type="file" multiple hidden accept=".pdf,.doc,.docx,.md,.txt,.xlsx,.pptx" @change="onFileChange" />
     </div>
 
     <!-- 搜索 -->
@@ -230,7 +260,7 @@ const statusDot: Record<Doc['status'], string> = {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="doc in filteredDocs" :key="doc.id">
+          <tr v-for="doc in pagedDocs" :key="doc.id">
             <td>
               <div class="flex items-center gap-sm">
                 <span class="file-ico"><AppIcon name="file" :size="15" /></span>
@@ -267,6 +297,18 @@ const statusDot: Record<Doc['status'], string> = {
       </table>
     </div>
 
+    <!-- 分页：10 / 20 / 30 每页 -->
+    <div v-if="filteredDocs.length" class="pagination-row">
+      <ElPagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[10, 20, 30]"
+        :total="filteredDocs.length"
+        layout="total, sizes, prev, pager, next"
+        background
+      />
+    </div>
+
     <!-- 新建知识空间弹窗 -->
     <div v-if="showNewSpace" class="modal-mask" @click.self="showNewSpace = false">
       <div class="modal">
@@ -274,11 +316,7 @@ const statusDot: Record<Doc['status'], string> = {
         <p class="modal-sub">知识空间用于按业务归类文档，如「技术文档」「公司规章」</p>
         <div class="field">
           <label class="field-label">空间名称</label>
-          <input v-model="newSpaceForm.name" class="input" placeholder="例如：市场物料" />
-        </div>
-        <div class="field">
-          <label class="field-label">描述（可选）</label>
-          <textarea v-model="newSpaceForm.desc" class="textarea" placeholder="这个空间存放什么类型的知识？"></textarea>
+          <input v-model="newSpaceForm.name" class="input" placeholder="例如：市场物料" @keydown.enter="createSpace" />
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="showNewSpace = false">取消</button>
@@ -302,7 +340,20 @@ const statusDot: Record<Doc['status'], string> = {
         </div>
       </div>
     </div>
+
+    <!-- 删除确认弹窗 -->
+    <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
+      <div class="modal modal-sm">
+        <div class="modal-title">删除文档</div>
+        <p class="modal-sub">确定删除「{{ deleteTarget.name }}」吗？其向量数据将一并清除，此操作不可恢复。</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" @click="deleteTarget = null">取消</button>
+          <button class="btn btn-del" @click="confirmDelete">确认删除</button>
+        </div>
+      </div>
+    </div>
   </div>
+  </ElConfigProvider>
 </template>
 
 <style scoped>
@@ -313,19 +364,34 @@ const statusDot: Record<Doc['status'], string> = {
 .chip b { font-weight: 700; margin-right: 2px; }
 
 .upload-zone {
-  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
   border: 2px dashed var(--hairline-strong); border-radius: var(--radius-lg);
-  padding: 22px 26px; margin-bottom: 18px; background: var(--surface-soft);
+  padding: 42px 40px; margin-bottom: 14px; background: var(--surface-soft);
+  min-height: 190px; cursor: pointer;
   transition: all 0.15s ease;
 }
+.upload-zone:hover { border-color: var(--brand-purple-300); }
+.upload-zone:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .upload-zone.dragging { border-color: var(--primary); background: var(--tint-lavender); }
 .upload-icon {
-  width: 52px; height: 52px; border-radius: var(--radius-lg);
+  width: 72px; height: 72px; border-radius: var(--radius-lg);
   background: var(--tint-sky); color: var(--link-blue);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .link-text { color: var(--link-blue); font-weight: 500; }
-.upload-select { width: auto; margin-left: auto; height: 40px; }
+/* 上传目标空间选择（Element Plus） */
+.upload-target { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.upload-target-label { font-size: 13px; color: var(--slate); font-weight: 500; white-space: nowrap; }
+.upload-select {
+  --el-color-primary: #5645d4;
+  --el-border-radius-base: 8px;
+  --el-border-color: var(--hairline-strong);
+  --el-border-color-hover: var(--primary);
+  --el-fill-color-blank: var(--canvas);
+  --el-font-family: inherit;
+  --el-text-color-regular: var(--ink);
+  width: 180px;
+}
 .search-row { margin-bottom: 14px; }
 .search-box {
   display: flex; align-items: center; gap: 8px; width: 280px; padding: 0 12px; height: 40px;
@@ -335,11 +401,37 @@ const statusDot: Record<Doc['status'], string> = {
 .search-input { border: none; outline: none; flex: 1; font-size: 13px; background: transparent; }
 
 .file-ico {
-  width: 30px; height: 30px; border-radius: var(--radius-sm);
+  width: 34px; height: 34px; border-radius: var(--radius-md);
   background: var(--tint-cream); color: var(--brand-brown);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: all 0.15s ease;
 }
 .doc-name { max-width: 300px; font-weight: 500; color: var(--ink); }
+
+/* 文档表格柔化：更大行距、浅分隔线、行悬浮着色、圆角卡片化 */
+.table-wrap { border-radius: var(--radius-lg); overflow: hidden; }
+.table :is(th, td) { padding: 15px 18px; }
+.table tbody tr { transition: background 0.15s ease; }
+.table tbody tr:hover { background: var(--surface-soft); }
+.table tbody tr:hover .file-ico { background: var(--tint-sky); color: var(--link-blue); }
+.table tbody td { border-bottom: 1px solid var(--hairline-soft); }
+.table tbody tr:last-child td { border-bottom: none; }
+.table thead th { background: var(--surface-soft); }
+
+/* 分页 */
+.pagination-row { display: flex; justify-content: flex-end; margin-top: 16px; }
+.pagination-row :deep(.el-pagination) {
+  --el-color-primary: #5645d4;
+  --el-pagination-button-color: var(--slate);
+  --el-pagination-hover-color: var(--primary);
+  font-family: inherit;
+}
+
+/* 删除确认弹窗 */
+.modal-sm { max-width: 420px; }
+.modal-sub { color: var(--slate); }
+.btn-del { background: var(--error); color: #fff; }
+.btn-del:hover { background: #b42318; }
 .action-btn {
   border: none; background: transparent; color: var(--steel);
   padding: 6px; border-radius: var(--radius-sm); display: flex;
@@ -351,6 +443,22 @@ const statusDot: Record<Doc['status'], string> = {
 
 @media (max-width: 720px) {
   .page { padding: 20px 16px; }
-  .upload-select { margin-left: 0; }
+  .upload-target { margin-left: 0; }
 }
+</style>
+
+<style>
+/* Element Plus 下拉弹层挂在 body 下，需用全局样式适配 Notion 主题 */
+.kb-select-popper {
+  --el-color-primary: #5645d4;
+  --el-border-radius-base: 8px;
+  --el-font-family: inherit;
+  --el-text-color-regular: var(--ink, #37352f);
+  --el-border-color-light: #ede9e4;
+  --el-box-shadow-light: 0 10px 32px rgba(10, 21, 48, 0.12);
+}
+.kb-select-popper .el-select-dropdown__item.is-selected { color: #5645d4; font-weight: 600; }
+.kb-select-popper .el-select-dropdown__item.is-hovering { background: #f4f2fc; }
+/* 分页内部的“每页条数”选择弹层同样挂 body，统一主题 */
+.el-select-dropdown .el-select-dropdown__item.is-selected { color: #5645d4; font-weight: 600; }
 </style>

@@ -161,7 +161,6 @@ onBeforeUnmount(() => {
         <h1 class="h2">数据看板</h1>
         <p class="text-sm">系统运行状态与用户活跃情况的宏观展示</p>
       </div>
-      <span class="tag tag-green"><span class="dot dot-green"></span> 全部服务正常</span>
     </header>
 
     <!-- 指标卡 -->
@@ -257,8 +256,8 @@ onBeforeUnmount(() => {
   flex: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
   gap: 8px 18px; padding: 18px 6px; line-height: 1.4; min-height: 230px;
 }
-.cloud-word { transition: transform 0.15s ease; cursor: default; }
-.cloud-word:hover { transform: scale(1.12); }
+.cloud-word { transition: opacity 0.15s ease; cursor: default; }
+.cloud-word:hover { opacity: 0.65; }
 
 @media (max-width: 1024px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }

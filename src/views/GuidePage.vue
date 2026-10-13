@@ -23,7 +23,7 @@ const boards = [
 
 const tips = [
   { icon: 'link', text: '答案中的 [1][2] 是引用角标，点开“引用来源”可核对原文片段，不怕 AI 编造' },
-  { icon: 'paperclip', text: '输入框左侧 📎 可附带文件提问，Enter 发送、Shift+Enter 换行' },
+  { icon: 'paperclip', text: '点击输入框左侧的回形针图标可附带文件提问；Enter 发送、Shift+Enter 换行' },
   { icon: 'refresh', text: '回答不满意可点「重新生成」；长期不满意就去「个人设置」调低随机性' },
   { icon: 'sliders', text: '「引用严格度」调高后，知识库没有的内容 AI 会明确回答“暂无依据”，而不是瞎猜' },
 ]
