@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 全局布局：左侧导航栏 + 右侧内容区
- * 导航项：对话 / 知识库 / 数据看板 / 历史 / 设置 / 反馈
+ * 导航项：课堂纪要 / 课堂追问 / 我的纪要 / 数据看板 / 设置 / 反馈
  */
 import { useRouter, useRoute } from 'vue-router'
 import { ref } from 'vue'
@@ -13,10 +13,10 @@ const route = useRoute()
 const sidebarOpen = ref(false)
 
 const navs = [
-  { path: '/chat', icon: 'chat', label: '智能对话' },
-  { path: '/knowledge', icon: 'book', label: '知识库管理' },
+  { path: '/studio', icon: 'spark', label: '课堂纪要' },
+  { path: '/qa', icon: 'chat', label: '课堂追问' },
+  { path: '/notes', icon: 'book', label: '我的纪要' },
   { path: '/dashboard', icon: 'chart', label: '数据看板' },
-  { path: '/history', icon: 'clock', label: '问答历史' },
   { path: '/settings', icon: 'sliders', label: '个人设置' },
   { path: '/feedback', icon: 'flag', label: '问题反馈' },
   { path: '/guide', icon: 'star', label: '使用说明' },
@@ -33,16 +33,16 @@ function handleLogout() {
     <!-- 移动端顶栏 -->
     <header class="mobile-topbar">
       <button class="btn-ghost btn" @click="sidebarOpen = !sidebarOpen"><AppIcon name="menu" /></button>
-      <span class="h4">智源问答</span>
+      <span class="h4">智学纪要</span>
     </header>
 
     <!-- 侧边栏 -->
     <aside class="sidebar" :class="{ open: sidebarOpen }">
-      <div class="brand" @click="router.push('/chat')">
-        <div class="brand-logo"><AppIcon name="spark" :size="18" /></div>
+      <div class="brand" @click="router.push('/studio')">
+        <div class="brand-logo"><AppIcon name="headphones" :size="18" /></div>
         <div>
-          <div class="brand-name">智源问答</div>
-          <div class="brand-sub">答案有据可查</div>
+          <div class="brand-name">智学纪要</div>
+          <div class="brand-sub">多模态课堂知识助手</div>
         </div>
       </div>
 

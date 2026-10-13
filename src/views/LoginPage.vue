@@ -126,21 +126,21 @@ const orbs = [
       />
 
       <div class="hero-body">
-        <!-- 品牌：闪电 logo + 系统名 -->
+        <!-- 品牌：耳机 logo + 系统名 -->
         <div class="hero-brand">
-          <div class="hero-logo"><AppIcon name="spark" :size="26" /></div>
-          <span class="hero-brand-name">智源问答</span>
+          <div class="hero-logo"><AppIcon name="headphones" :size="26" /></div>
+          <span class="hero-brand-name">智学纪要</span>
         </div>
 
-        <h1 class="hero-title">让每一次回答<br />都有据可查</h1>
+        <h1 class="hero-title">录一堂课，得一份<br />可追问的笔记</h1>
         <p class="hero-sub">
-          基于 RAG 检索增强生成的企业知识问答系统。<br />
-          上传文档，即刻拥有一个懂业务的 AI 助手。
+          多模态课堂知识助手：上传课堂录音、板书照片或短视频，<br />
+          自动转写、抽取关键帧、生成结构化课堂纪要，随时溯源追问。
         </p>
         <div class="hero-features">
-          <div class="feature-chip tint-yellow-bold"><AppIcon name="link" :size="14" /> 引用溯源</div>
-          <div class="feature-chip tint-mint"><AppIcon name="database" :size="14" /> 知识库管理</div>
-          <div class="feature-chip tint-sky"><AppIcon name="chart" :size="14" /> 数据看板</div>
+          <div class="feature-chip tint-yellow-bold"><AppIcon name="headphones" :size="14" /> 语音转写</div>
+          <div class="feature-chip tint-mint"><AppIcon name="image" :size="14" /> 关键帧理解</div>
+          <div class="feature-chip tint-sky"><AppIcon name="chat" :size="14" /> 追问溯源</div>
         </div>
       </div>
     </section>

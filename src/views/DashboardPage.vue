@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 板块三：数据统计仪表盘
- * - 系统指标卡：文档总数 / 向量总数 / 今日提问 / 系统健康度
- * - 每日提问量趋势（折线）· 知识空间文档占比（环形）
- * - 知识库高频词 TOP10（条形）· 热门问题词云（CSS）
+ * 数据看板：课堂处理量与追问活跃度
+ * - 指标卡：课堂总数 / 转写时长 / 关键帧解析 / 今日追问
+ * - 每日处理课堂数趋势（折线）· 输入类型占比（环形）
+ * - 高频知识点 TOP10（条形）· 热门追问词云（CSS）
  */
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import * as echarts from 'echarts'
@@ -11,30 +11,30 @@ import AppIcon from '@/components/AppIcon.vue'
 
 // ---------- 指标卡 ----------
 const metrics = [
-  { label: '知识库总文档', value: '108', unit: '篇', delta: '+12 本周', tint: 'tint-sky', icon: 'book' },
-  { label: '向量总数', value: '2.9', unit: '万条', delta: '+0.3 万本周', tint: 'tint-lavender', icon: 'database' },
-  { label: '今日提问量', value: '326', unit: '次', delta: '+18% 较昨日', tint: 'tint-mint', icon: 'chat' },
-  { label: '系统健康度', value: '98.6', unit: '%', delta: '服务运行正常', tint: 'tint-peach', icon: 'activity' },
+  { label: '课堂总数', value: '12', unit: '节', delta: '+3 本周', tint: 'tint-sky', icon: 'book' },
+  { label: '累计转写时长', value: '8.4', unit: '小时', delta: '+2.1 小时本周', tint: 'tint-lavender', icon: 'headphones' },
+  { label: '关键帧解析', value: '156', unit: '张', delta: '+42 张本周', tint: 'tint-mint', icon: 'image' },
+  { label: '今日追问量', value: '96', unit: '次', delta: '+18% 较昨日', tint: 'tint-peach', icon: 'chat' },
 ]
 
-// ---------- 词云（热门问题关键词，字号随热度变化） ----------
+// ---------- 词云（热门追问关键词，字号随热度变化） ----------
 const cloudWords = [
-  { t: '报销流程', s: 30, c: '#5645d4' },
-  { t: 'RAG原理', s: 26, c: '#dd5b00' },
-  { t: '年假规则', s: 24, c: '#1aae39' },
-  { t: '向量检索', s: 22, c: '#0075de' },
-  { t: '切片策略', s: 18, c: '#a02e6d' },
-  { t: 'Embedding', s: 20, c: '#7b3ff2' },
-  { t: '权限管理', s: 16, c: '#2a9d99' },
-  { t: '考勤', s: 15, c: '#793400' },
-  { t: 'Milvus', s: 17, c: '#5645d4' },
-  { t: '重排序', s: 14, c: '#dd5b00' },
-  { t: 'API密钥', s: 13, c: '#1aae39' },
-  { t: '知识库上传', s: 15, c: '#0075de' },
-  { t: '幻觉', s: 19, c: '#391c57' },
-  { t: '引用溯源', s: 21, c: '#5645d4' },
-  { t: '解析失败', s: 12, c: '#a02e6d' },
-  { t: 'Prompt模板', s: 13, c: '#2a9d99' },
+  { t: '泰勒展开', s: 30, c: '#5645d4' },
+  { t: '进程线程', s: 26, c: '#dd5b00' },
+  { t: '拉格朗日余项', s: 24, c: '#1aae39' },
+  { t: 'PV操作', s: 22, c: '#0075de' },
+  { t: '麦克劳林公式', s: 20, c: '#a02e6d' },
+  { t: '死锁条件', s: 18, c: '#7b3ff2' },
+  { t: '收敛半径', s: 16, c: '#2a9d99' },
+  { t: '二叉树遍历', s: 17, c: '#793400' },
+  { t: '信号量', s: 15, c: '#5645d4' },
+  { t: '展开阶数', s: 14, c: '#dd5b00' },
+  { t: '傅里叶级数', s: 13, c: '#1aae39' },
+  { t: '页面置换', s: 15, c: '#0075de' },
+  { t: '期末考点', s: 19, c: '#391c57' },
+  { t: '作业习题', s: 21, c: '#5645d4' },
+  { t: '板书推导', s: 12, c: '#a02e6d' },
+  { t: '时间戳回听', s: 13, c: '#2a9d99' },
 ]
 
 // ---------- ECharts ----------
@@ -46,14 +46,14 @@ let charts: echarts.ECharts[] = []
 const NOTION_PALETTE = ['#5645d4', '#7b3ff2', '#0075de', '#2a9d99', '#dd5b00', '#ff64c8']
 
 function initCharts() {
-  // 折线：每日提问量趋势
+  // 折线：每日处理课堂数与追问量趋势
   if (trendRef.value) {
     const days = Array.from({ length: 14 }, (_, i) => {
       const d = new Date()
       d.setDate(d.getDate() - 13 + i)
       return `${d.getMonth() + 1}/${d.getDate()}`
     })
-    const values = [186, 204, 232, 210, 265, 298, 276, 312, 340, 305, 356, 388, 352, 326]
+    const values = [42, 56, 48, 62, 74, 68, 82, 76, 90, 84, 98, 92, 104, 96]
     const c = echarts.init(trendRef.value)
     c.setOption({
       grid: { top: 36, left: 44, right: 16, bottom: 28 },
@@ -62,7 +62,7 @@ function initCharts() {
       yAxis: { type: 'value', splitLine: { lineStyle: { color: '#ede9e4' } }, axisLabel: { color: '#787671' } },
       series: [
         {
-          name: '提问量',
+          name: '追问量',
           type: 'line',
           data: values,
           smooth: true,
@@ -81,11 +81,11 @@ function initCharts() {
     charts.push(c)
   }
 
-  // 环形：各知识空间文档占比
+  // 环形：上传材料类型占比
   if (pieRef.value) {
     const c = echarts.init(pieRef.value)
     c.setOption({
-      tooltip: { trigger: 'item', formatter: '{b}: {c} 篇 ({d}%)' },
+      tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
       legend: { bottom: 0, icon: 'circle', textStyle: { color: '#5d5b54', fontSize: 12 } },
       color: NOTION_PALETTE,
       series: [
@@ -96,10 +96,10 @@ function initCharts() {
           itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 6 },
           label: { show: false },
           data: [
-            { name: '技术文档', value: 46 },
-            { name: '产品手册', value: 32 },
-            { name: '公司规章', value: 18 },
-            { name: '项目资料', value: 12 },
+            { name: '课堂录音', value: 46 },
+            { name: '板书 / PPT 图片', value: 32 },
+            { name: '课堂短视频', value: 18 },
+            { name: '混合上传', value: 12 },
           ],
         },
       ],
@@ -107,13 +107,13 @@ function initCharts() {
     charts.push(c)
   }
 
-  // 条形：知识库高频词 TOP10
+  // 条形：高频知识点 TOP10（被追问最多的知识点）
   if (barRef.value) {
-    const words = ['报销流程', 'RAG原理', '年假规则', '向量检索', '引用溯源', '切片策略', 'Embedding', '幻觉', 'Milvus', '权限管理']
-    const counts = [286, 254, 221, 198, 176, 154, 132, 118, 97, 85]
+    const words = ['泰勒展开', '进程与线程', '拉格朗日余项', 'PV操作', '二叉树遍历', '麦克劳林公式', '死锁条件', '收敛半径', '信号量', '傅里叶级数']
+    const counts = [86, 72, 64, 55, 49, 43, 38, 31, 27, 22]
     const c = echarts.init(barRef.value)
     c.setOption({
-      grid: { top: 8, left: 88, right: 30, bottom: 8 },
+      grid: { top: 8, left: 104, right: 30, bottom: 8 },
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       xAxis: { type: 'value', show: false },
       yAxis: {
@@ -159,7 +159,7 @@ onBeforeUnmount(() => {
     <header class="page-head">
       <div>
         <h1 class="h2">数据看板</h1>
-        <p class="text-sm">系统运行状态与用户活跃情况的宏观展示</p>
+        <p class="text-sm">课堂处理量与追问活跃情况的宏观展示</p>
       </div>
     </header>
 
@@ -178,8 +178,8 @@ onBeforeUnmount(() => {
       <div class="card chart-card span-2">
         <div class="chart-head">
           <div>
-            <div class="h4">每日提问量趋势</div>
-            <div class="text-caption">近 14 天用户提问次数</div>
+            <div class="h4">每日追问量趋势</div>
+            <div class="text-caption">近 14 天课堂追问次数</div>
           </div>
           <span class="tag tag-purple">近7日 +18%</span>
         </div>
@@ -189,8 +189,8 @@ onBeforeUnmount(() => {
       <div class="card chart-card">
         <div class="chart-head">
           <div>
-            <div class="h4">知识空间文档占比</div>
-            <div class="text-caption">各空间文档数量分布</div>
+            <div class="h4">上传材料类型占比</div>
+            <div class="text-caption">录音 / 图片 / 视频的分布</div>
           </div>
         </div>
         <div ref="pieRef" class="chart pie"></div>
@@ -199,8 +199,8 @@ onBeforeUnmount(() => {
       <div class="card chart-card span-2">
         <div class="chart-head">
           <div>
-            <div class="h4">知识库高频词 TOP10</div>
-            <div class="text-caption">用户提问中被检索最多的关键词</div>
+            <div class="h4">高频知识点 TOP10</div>
+            <div class="text-caption">课堂追问中被检索最多的知识点</div>
           </div>
         </div>
         <div ref="barRef" class="chart bar"></div>
@@ -209,8 +209,8 @@ onBeforeUnmount(() => {
       <div class="card chart-card tint-cream">
         <div class="chart-head">
           <div>
-            <div class="h4">热门问题词云</div>
-            <div class="text-caption">字号代表提问热度</div>
+            <div class="h4">热门追问词云</div>
+            <div class="text-caption">字号代表追问热度</div>
           </div>
           <AppIcon name="spark" :size="18" class="muted" />
         </div>

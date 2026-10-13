@@ -40,7 +40,7 @@ const statusTag: Record<FeedbackItem['status'], string> = {
   <div class="page">
     <header class="mb-md">
       <h1 class="h2">问题反馈</h1>
-      <p class="text-sm">遇到 Bug 或有改进建议？告诉我们，让智源问答变得更好</p>
+      <p class="text-sm">遇到 Bug 或有改进建议？告诉我们，让智学纪要变得更好</p>
     </header>
 
     <div class="grid">
