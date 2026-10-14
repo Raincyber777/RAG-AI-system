@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
  * 课堂追问：基于课堂纪要知识库的多轮问答（核心前台）
- * - 左侧：课堂列表（与我的纪要数据同步）+ 搜索
- * - 右侧：聊天窗口（流式回答 / 录音时间戳与图片来源引用 / 语音输入 / 对话导航）
+ * - 左侧：对话列表（新增 / 置顶 / 重命名 / 删除，可关联课堂）+ 搜索 + 常显滚动条
+ * - 右侧：聊天窗口（流式回答 / 录音时间戳与图片来源引用 / 语音输入）
+ * - 提问记录导航：千问式右侧悬浮面板，悬停展开、点击定位，固定在滚动条左侧不遮挡
  * 回答为前端演示，接入真实模型后仅需替换 runStages / streamAnswer 中的回调
  */
-import { ref, reactive, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import { classNotes } from '@/store/study'
@@ -13,15 +14,39 @@ import { initialMessages, demoReply, type ChatMessage, type Citation } from '@/m
 
 const route = useRoute()
 
-// ---------- 课堂列表 ----------
+// ---------- 对话列表（可关联课堂，也可自由追问） ----------
+interface QaSession {
+  id: string
+  title: string
+  noteId?: string // 关联的课堂纪要
+  pinned?: boolean
+  pinnedAt?: number
+}
+
+const qaSessions = ref<QaSession[]>(
+  classNotes.value
+    .filter((n) => n.status === 'done')
+    .map((n) => ({ id: n.id, title: n.title, noteId: n.id }))
+)
 const sessionSearch = ref('')
 const activeSessionId = ref('')
 const sessionsOpen = ref(true) // 会话面板可横向收起 / 展开
 
+// 工作台新完成的纪要 → 自动出现为一条对话
+watch(
+  () => classNotes.value.map((n) => n.id + ':' + n.status).join('|'),
+  () => {
+    for (const n of classNotes.value) {
+      if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
+        qaSessions.value.push({ id: n.id, title: n.title, noteId: n.id })
+      }
+    }
+  }
+)
+
 const doneNotes = computed(() => classNotes.value.filter((n) => n.status === 'done'))
 const totalChunks = computed(() => doneNotes.value.reduce((s, n) => s + n.chunkCount, 0))
 
-// 课堂分组：按生成日期动态分为 今天 / 昨天 / 更早
 const dayStr = (offset: number) => {
   const d = new Date(Date.now() - offset * 86400000)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -29,25 +54,108 @@ const dayStr = (offset: number) => {
 const todayStr = dayStr(0)
 const yestStr = dayStr(1)
 
+function groupOf(s: QaSession): '今天' | '昨天' | '更早' {
+  if (!s.noteId) return '今天'
+  const note = classNotes.value.find((n) => n.id === s.noteId)
+  const day = note ? note.date.slice(0, 10) : todayStr
+  if (day === todayStr) return '今天'
+  if (day === yestStr) return '昨天'
+  return '更早'
+}
+
+// 分组：置顶组在最上（后置顶的排在先置顶的前面），其余按 今天 / 昨天 / 更早
 const sessionGroups = computed(() => {
   const q = sessionSearch.value.trim()
-  const match = (title: string) => title.includes(q)
-  const byGroup: Record<'今天' | '昨天' | '更早', typeof doneNotes.value> = { 今天: [], 昨天: [], 更早: [] }
-  for (const n of doneNotes.value) {
-    if (!match(n.title)) continue
-    const day = n.date.slice(0, 10)
-    if (day === todayStr) byGroup['今天'].push(n)
-    else if (day === yestStr) byGroup['昨天'].push(n)
-    else byGroup['更早'].push(n)
-  }
-  const groups: { label: string; items: typeof doneNotes.value }[] = []
+  const match = (s: QaSession) => s.title.includes(q)
+  const groups: { label: string; items: QaSession[] }[] = []
+  const pinned = qaSessions.value
+    .filter((s) => s.pinned && match(s))
+    .sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0))
+  if (pinned.length) groups.push({ label: '置顶', items: pinned })
   for (const g of ['今天', '昨天', '更早'] as const) {
-    if (byGroup[g].length) groups.push({ label: g, items: byGroup[g] })
+    const items = qaSessions.value.filter((s) => !s.pinned && match(s) && groupOf(s) === g)
+    if (items.length) groups.push({ label: g, items })
   }
   return groups
 })
 
-// ---------- 消息（按课堂隔离） ----------
+// 徽标：关联课堂显示纪要追问次数，自由对话显示本轮提问数
+function badgeCount(s: QaSession): number {
+  if (s.noteId) {
+    const n = classNotes.value.find((x) => x.id === s.noteId)
+    if (n) return n.questions
+  }
+  const list = messageStore[s.id]
+  return list ? list.filter((m) => m.role === 'user').length : 0
+}
+
+// ---------- 会话管理：新增 / 置顶 / 重命名 / 删除 ----------
+function createSession() {
+  const s: QaSession = { id: 'qa' + Date.now(), title: '新的对话' }
+  qaSessions.value.unshift(s)
+  if (isTyping.value || isStreaming.value) stopGenerating()
+  activeSessionId.value = s.id
+  messagesFor(s.id)
+}
+
+function togglePin(s: QaSession) {
+  if (s.pinned) {
+    s.pinned = false
+    s.pinnedAt = undefined
+  } else {
+    s.pinned = true
+    s.pinnedAt = Date.now()
+  }
+}
+
+// 行内重命名
+const editId = ref<string | null>(null)
+const editTitle = ref('')
+
+function startRename(s: QaSession) {
+  editId.value = s.id
+  editTitle.value = s.title
+  nextTick(() => {
+    const el = document.querySelector('.rename-input') as HTMLInputElement | null
+    el?.focus()
+    el?.select()
+  })
+}
+function commitRename() {
+  const s = qaSessions.value.find((x) => x.id === editId.value)
+  const t = editTitle.value.trim()
+  if (s && t) s.title = t
+  editId.value = null
+}
+function cancelRename() {
+  editId.value = null
+}
+
+// 删除；若删除的是当前对话则自动切到剩余的第一个
+function removeSession(s: QaSession) {
+  const idx = qaSessions.value.indexOf(s)
+  if (idx !== -1) qaSessions.value.splice(idx, 1)
+  delete messageStore[s.id]
+  if (activeSessionId.value === s.id) {
+    if (isTyping.value || isStreaming.value) stopGenerating()
+    const first = qaSessions.value[0]
+    if (first) {
+      activeSessionId.value = first.id
+      messagesFor(first.id)
+    } else {
+      activeSessionId.value = ''
+    }
+  }
+}
+
+// 删除前二次确认
+const deleteTarget = ref<QaSession | null>(null)
+function confirmDelete() {
+  if (deleteTarget.value) removeSession(deleteTarget.value)
+  deleteTarget.value = null
+}
+
+// ---------- 消息（按对话隔离） ----------
 const messageStore = reactive<Record<string, ChatMessage[]>>({})
 
 function messagesFor(id: string): ChatMessage[] {
@@ -59,11 +167,16 @@ const activeMessages = computed<ChatMessage[]>(() =>
   activeSessionId.value ? (messageStore[activeSessionId.value] ?? []) : []
 )
 
-const activeNote = computed(() => classNotes.value.find((n) => n.id === activeSessionId.value))
+const activeSession = computed(() => qaSessions.value.find((s) => s.id === activeSessionId.value))
+const activeNote = computed(() =>
+  activeSession.value?.noteId ? classNotes.value.find((n) => n.id === activeSession.value?.noteId) : undefined
+)
 
 function switchSession(id: string) {
+  if (id === activeSessionId.value) return
   if (isTyping.value || isStreaming.value) stopGenerating()
   activeSessionId.value = id
+  messagesFor(id)
   scrollToBottom(true)
 }
 
@@ -113,7 +226,7 @@ function stopGenerating() {
   aiStage.value = null
 }
 
-// 把当前课堂的纪要标题代入演示回答（更贴近真实观感）
+// 把当前对话关联课堂的纪要标题代入演示回答（更贴近真实观感）
 function buildReply() {
   const note = activeNote.value
   if (!note) return demoReply
@@ -146,7 +259,6 @@ function toBottom() {
   el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
 }
 
-const navOpen = ref(false)
 const flashId = ref('')
 let flashTimer: number | null = null
 const outline = computed(() =>
@@ -163,6 +275,9 @@ function jumpTo(id: string) {
   if (flashTimer) window.clearTimeout(flashTimer)
   flashTimer = window.setTimeout(() => { flashId.value = '' }, 1400)
 }
+
+// ---------- 提问记录导航 ----------
+// 千问式交互：固定在消息区右缘（滚动条左侧），纯 CSS 悬停 / 键盘聚焦展开，点击条目定位
 
 // ---------- 发送 ----------
 function send() {
@@ -284,8 +399,10 @@ function citeMarkText(c: Citation) {
 
 // ---------- 建议 ----------
 const suggestions = computed(() => {
-  const t = activeNote.value?.title ?? '这节课'
-  return [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
+  const t = activeNote.value?.title
+  return t
+    ? [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
+    : ['帮我总结上一节课的重点', '泰勒展开有哪些易错点？', '进程和线程的区别是什么？', '二叉树的四种遍历怎么背？']
 })
 
 function suggestionClick(q: string) {
@@ -298,17 +415,17 @@ function now() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 初始课堂：支持 /qa?note=id 直达；否则选第一个（首个课堂预置一轮演示对话）
+// 初始对话：支持 /qa?note=id 直达；首个对话预置一轮演示
 onMounted(() => {
   const q = route.query.note
   const id = typeof q === 'string' ? q : ''
-  const exists = doneNotes.value.some((n) => n.id === id)
-  activeSessionId.value = exists ? id : (doneNotes.value[0]?.id ?? '')
+  const exists = qaSessions.value.some((s) => s.id === id)
+  activeSessionId.value = exists ? id : (qaSessions.value[0]?.id ?? '')
   if (activeSessionId.value && !messageStore[activeSessionId.value]) {
     messageStore[activeSessionId.value] =
       activeSessionId.value === 'n1' ? initialMessages.map((m) => ({ ...m })) : []
   }
-  scrollToBottom(true)
+  nextTick(() => scrollToBottom(true))
 })
 
 onBeforeUnmount(() => {
@@ -320,15 +437,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-shell">
-    <!-- 左侧课堂列表 -->
+    <!-- 左侧对话列表 -->
     <aside class="sessions" :class="{ collapsed: !sessionsOpen }">
-      <div class="side-title">
-        <AppIcon name="book" :size="15" />
-        <span>课堂知识库</span>
-      </div>
+      <button class="btn btn-primary btn-block" @click="createSession">
+        <AppIcon name="plus" :size="16" /> 新增对话
+      </button>
       <div class="search-box">
         <AppIcon name="search" :size="15" />
-        <input v-model="sessionSearch" placeholder="搜索课堂" class="search-input" />
+        <input v-model="sessionSearch" placeholder="搜索对话" class="search-input" />
       </div>
 
       <div class="session-scroll">
@@ -338,18 +454,44 @@ onBeforeUnmount(() => {
             v-for="s in g.items"
             :key="s.id"
             class="session-item"
-            :class="{ active: s.id === activeSessionId }"
+            :class="{ active: s.id === activeSessionId, pinned: s.pinned }"
             role="button"
             tabindex="0"
             @click="switchSession(s.id)"
             @keydown.enter.prevent="switchSession(s.id)"
           >
-            <AppIcon name="book" :size="14" />
-            <span class="ellipsis">{{ s.title }}</span>
-            <span class="qa-count" title="追问次数">{{ s.questions }}</span>
+            <AppIcon name="chat" :size="14" />
+            <input
+              v-if="editId === s.id"
+              v-model="editTitle"
+              class="rename-input"
+              aria-label="重命名对话"
+              @click.stop
+              @keydown.enter.prevent="commitRename"
+              @keydown.esc="cancelRename"
+              @blur="commitRename"
+            />
+            <span v-else class="ellipsis">{{ s.title }}</span>
+            <AppIcon v-if="s.pinned && editId !== s.id" name="pin" :size="12" class="pin-badge" />
+            <span v-if="editId !== s.id" class="qa-count" title="追问次数">{{ badgeCount(s) }}</span>
+            <span v-if="editId !== s.id" class="item-actions">
+              <button
+                class="item-act"
+                :class="{ on: s.pinned }"
+                :title="s.pinned ? '取消置顶' : '置顶'"
+                :aria-label="s.pinned ? '取消置顶' : '置顶'"
+                @click.stop="togglePin(s)"
+              ><AppIcon name="pin" :size="13" /></button>
+              <button class="item-act" title="重命名" aria-label="重命名" @click.stop="startRename(s)">
+                <AppIcon name="edit" :size="13" />
+              </button>
+              <button class="item-act danger" title="删除" aria-label="删除" @click.stop="deleteTarget = s">
+                <AppIcon name="trash" :size="13" />
+              </button>
+            </span>
           </div>
         </template>
-        <div v-if="sessionGroups.length === 0" class="session-empty">没有匹配的课堂</div>
+        <div v-if="sessionGroups.length === 0" class="session-empty">没有匹配的对话</div>
       </div>
 
       <div class="kb-notice">
@@ -361,8 +503,8 @@ onBeforeUnmount(() => {
     <!-- 折叠标志 -->
     <button
       class="rail-toggle"
-      :title="sessionsOpen ? '收起课堂列表' : '展开课堂列表'"
-      :aria-label="sessionsOpen ? '收起课堂列表' : '展开课堂列表'"
+      :title="sessionsOpen ? '收起对话列表' : '展开对话列表'"
+      :aria-label="sessionsOpen ? '收起对话列表' : '展开对话列表'"
       @click="sessionsOpen = !sessionsOpen"
     >
       <AppIcon :name="sessionsOpen ? 'chevron-left' : 'chevron-right'" :size="14" />
@@ -371,11 +513,11 @@ onBeforeUnmount(() => {
     <!-- 右侧聊天窗口 -->
     <section class="chat-main">
       <div class="chat-head">
-        <template v-if="activeNote">
-          <span class="head-title ellipsis">{{ activeNote.title }}</span>
-          <span class="tag tag-purple">{{ activeNote.course }}</span>
+        <template v-if="activeSession">
+          <span class="head-title ellipsis">{{ activeSession.title }}</span>
+          <span class="tag tag-purple">{{ activeNote ? activeNote.course : '自由追问' }}</span>
         </template>
-        <span v-else class="head-title muted">请选择一个课堂</span>
+        <span v-else class="head-title muted">选择左侧对话开始追问</span>
       </div>
 
       <!-- 消息区 -->
@@ -384,8 +526,8 @@ onBeforeUnmount(() => {
           <!-- 空状态 -->
           <div v-if="!activeMessages.length" class="welcome fade-in">
             <div class="welcome-logo"><AppIcon name="chat" :size="28" /></div>
-            <h2 class="h2">针对这节课，想问点什么？</h2>
-            <p class="text-md muted">回答基于本节课的转写稿、板书与 PPT 生成，每句话都能溯源到录音时间点或图片。</p>
+            <h2 class="h2">针对课堂内容，想问点什么？</h2>
+            <p class="text-md muted">回答基于课堂纪要、转写稿与板书生成，每句话都能溯源到录音时间点或图片。</p>
             <div class="sug-grid">
               <button v-for="q in suggestions" :key="q" class="sug-card" @click="suggestionClick(q)">
                 <AppIcon name="chat" :size="15" />
@@ -472,19 +614,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 对话导航 -->
-        <div
-          v-if="outline.length"
-          class="msg-nav"
-          :class="{ open: navOpen }"
-          @mouseenter="navOpen = true"
-          @mouseleave="navOpen = false"
-        >
+        <!-- 提问记录导航：千问式，悬停展开，点击定位（位于滚动条左侧，不遮挡） -->
+        <div v-if="outline.length" class="msg-nav">
           <button class="nav-handle" type="button" title="提问记录导航" aria-label="提问记录导航">
             <AppIcon name="menu" :size="14" />
           </button>
           <div class="nav-list">
-            <button v-for="o in outline" :key="o.id" class="nav-item" :title="o.text" @click="jumpTo(o.id)">{{ o.text }}</button>
+            <button
+              v-for="o in outline"
+              :key="o.id"
+              class="nav-item"
+              :title="o.text"
+              @click="jumpTo(o.id)"
+            >{{ o.text }}</button>
           </div>
         </div>
 
@@ -527,21 +669,31 @@ onBeforeUnmount(() => {
         <p v-else class="composer-tip">回答由 AI 基于课堂纪要生成，请以引用原文为准</p>
       </footer>
     </section>
+
+    <!-- 删除对话确认 -->
+    <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
+      <div class="modal modal-sm">
+        <div class="modal-title">删除对话</div>
+        <p class="modal-sub">确定删除「{{ deleteTarget.title }}」吗？该对话的聊天记录将被清除，此操作不可恢复。</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" @click="deleteTarget = null">取消</button>
+          <button class="btn btn-del" @click="confirmDelete">删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .chat-shell { display: flex; height: 100%; min-height: 0; overflow: hidden; }
 
-/* ---------- 课堂列表 ---------- */
+/* ---------- 对话列表 ---------- */
 .sessions {
   width: 264px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px;
   padding: 16px 12px; background: var(--surface); border-right: 1px solid var(--hairline);
   transition: margin-left 0.2s ease, opacity 0.15s ease;
 }
 .sessions.collapsed { margin-left: -264px; opacity: 0; pointer-events: none; }
-
-.side-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; padding: 0 4px; }
 
 .rail-toggle {
   width: 22px; flex-shrink: 0; border: none; cursor: pointer;
@@ -556,6 +708,7 @@ onBeforeUnmount(() => {
   color: var(--stone);
 }
 .search-input { border: none; outline: none; flex: 1; font-size: 13px; background: transparent; }
+/* 常显滚动条（带轨道底色），一眼可见、方便滚动 */
 .session-scroll {
   flex: 1; overflow-y: auto; min-height: 0;
   scrollbar-gutter: stable; scrollbar-width: auto;
@@ -575,13 +728,44 @@ onBeforeUnmount(() => {
 .session-item:hover { background: var(--tint-gray); }
 .session-item.active { background: var(--canvas); color: var(--ink); font-weight: 500; box-shadow: 0 1px 2px rgba(15,15,15,0.06); }
 .session-item .ellipsis { flex: 1; min-width: 0; }
+.session-item.pinned:not(.active) { background: var(--tint-lavender); color: var(--brand-purple-800); }
+.pin-badge { color: var(--primary); flex-shrink: 0; }
+.session-item:hover .pin-badge { display: none; }
 .session-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 20px 0; }
+
+/* 会话悬浮操作：置顶 / 重命名 / 删除 */
+.item-actions {
+  display: flex; gap: 2px; flex-shrink: 0;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.session-item:hover .item-actions,
+.session-item:focus-within .item-actions { opacity: 1; }
+.item-act {
+  border: none; background: transparent; color: var(--stone);
+  padding: 3px; border-radius: var(--radius-sm); display: flex; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.item-act:hover { background: var(--surface); color: var(--ink); }
+.item-act.on { color: var(--primary); }
+.item-act.on:hover { background: var(--tint-lavender); }
+.item-act.danger:hover { color: #d92d20; background: var(--tint-rose); }
+
+/* 行内重命名输入框 */
+.rename-input {
+  flex: 1; min-width: 0; border: 1px solid var(--primary); border-radius: var(--radius-sm);
+  background: var(--canvas); font-family: inherit; font-size: 13px; color: var(--ink);
+  padding: 3px 7px; outline: none; box-shadow: 0 0 0 2px var(--tint-lavender);
+}
+
+/* 追问次数徽标：悬浮操作出现时让位隐藏，避免拥挤 */
 .qa-count {
   flex-shrink: 0; min-width: 20px; height: 18px; padding: 0 5px;
   border-radius: 9px; background: var(--hairline-soft); color: var(--steel);
   font-size: 10.5px; font-weight: 600; line-height: 18px; text-align: center;
 }
 .session-item.active .qa-count { background: var(--tint-lavender); color: var(--primary); }
+.session-item:hover .qa-count { display: none; }
+
 .kb-notice {
   display: flex; align-items: center; gap: 7px; padding: 9px 10px;
   background: var(--tint-lavender); color: var(--brand-purple-800);
@@ -589,7 +773,10 @@ onBeforeUnmount(() => {
 }
 
 /* ---------- 聊天主区 ---------- */
-.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--canvas); }
+.chat-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--canvas);
+  overflow: hidden; /* 悬浮球贴边时裁掉滑出的一半，呈现「隐藏一半」效果 */
+}
 .chat-head {
   display: flex; align-items: center; gap: 10px; padding: 12px 24px;
   border-bottom: 1px solid var(--hairline-soft); background: var(--canvas);
@@ -597,7 +784,18 @@ onBeforeUnmount(() => {
 .head-title { font-size: 14px; font-weight: 700; max-width: 50%; }
 
 .messages-wrap { flex: 1; min-height: 0; display: flex; position: relative; }
-.messages { flex: 1; min-width: 0; overflow-y: auto; padding: 26px 24px; }
+/* 消息区滚动条：常显（8px 带轨道），右内边距相应收窄保持视觉对称；
+   悬浮球的活动范围已避开这 8px 槽位，不会遮挡滚动条 */
+.messages {
+  flex: 1; min-width: 0; overflow-y: auto;
+  padding: 26px 16px 26px 24px;
+  scrollbar-gutter: stable; scrollbar-width: auto;
+  scrollbar-color: var(--stone) var(--hairline-soft);
+}
+.messages::-webkit-scrollbar { width: 8px; }
+.messages::-webkit-scrollbar-track { background: var(--hairline-soft); border-radius: 4px; }
+.messages::-webkit-scrollbar-thumb { background: var(--stone); border-radius: 4px; }
+.messages::-webkit-scrollbar-thumb:hover { background: var(--steel); }
 .welcome { max-width: 560px; margin: 8vh auto 0; text-align: center; }
 .welcome-logo {
   width: 60px; height: 60px; border-radius: 18px; margin: 0 auto 18px;
@@ -769,29 +967,36 @@ onBeforeUnmount(() => {
 .fade-up-enter-active, .fade-up-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
 .fade-up-enter-from, .fade-up-leave-to { opacity: 0; transform: translateY(8px); }
 
-/* ---------- 提问记录导航 ---------- */
+/* ---------- 提问记录导航（千问式：悬停展开 / 点击定位） ---------- */
+/* 固定在消息区右缘 right:16px：常显滚动条占 8px，导航与它之间留 8px 间隙，互不遮挡 */
 .msg-nav {
-  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-  z-index: 6; width: 40px; max-height: 72vh;
-  display: flex; flex-direction: column; align-items: stretch; overflow: hidden;
+  position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+  z-index: 7; width: 40px; max-height: 72vh;
+  display: flex; flex-direction: column; overflow: hidden;
   background: var(--canvas); border: 1px solid var(--hairline);
-  border-radius: 999px; box-shadow: 0 6px 20px rgba(10, 21, 48, 0.1);
-  transition: width 0.22s ease, border-radius 0.22s ease;
+  border-radius: 999px; box-shadow: 0 6px 20px rgba(10, 21, 48, 0.12);
+  transition: width 0.22s ease, border-radius 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+  user-select: none;
 }
-.msg-nav.open { width: 268px; border-radius: var(--radius-lg); }
+.msg-nav:hover,
+.msg-nav:focus-within {
+  width: 268px; border-radius: var(--radius-lg);
+  border-color: rgba(86, 69, 212, 0.45);
+  box-shadow: 0 8px 26px rgba(86, 69, 212, 0.16);
+}
 .nav-handle {
   width: 40px; height: 40px; flex-shrink: 0;
   border: none; background: transparent; color: var(--stone);
   display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
 }
-.msg-nav.open .nav-handle { color: var(--primary); }
+.msg-nav:hover .nav-handle, .msg-nav:focus-within .nav-handle { color: var(--primary); }
 .nav-list {
-  display: none; width: 100%;
-  max-height: calc(72vh - 40px); overflow-y: auto; min-height: 0;
-  padding: 2px 6px 8px;
+  display: none; width: 268px; flex: 1; min-height: 0;
+  overflow-y: auto; padding: 2px 6px 8px;
   scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent;
 }
-.msg-nav.open .nav-list { display: block; }
+.msg-nav:hover .nav-list, .msg-nav:focus-within .nav-list { display: block; }
 .nav-item {
   display: block; width: 100%; text-align: left; font-family: inherit;
   font-size: 12.5px; line-height: 1.5; color: var(--slate);
@@ -801,12 +1006,19 @@ onBeforeUnmount(() => {
 }
 .nav-item:hover { background: var(--tint-lavender); color: var(--brand-purple-800); }
 
+/* 导航定位高亮 */
 .row-user, .row-ai { scroll-margin-top: 14px; }
 @keyframes msg-flash {
   0% { box-shadow: 0 0 0 4px rgba(86, 69, 212, 0.35); }
   100% { box-shadow: 0 0 0 0 rgba(86, 69, 212, 0); }
 }
 .row-user.flash .bubble-user { animation: msg-flash 1.3s ease-out; }
+
+/* ---------- 删除对话确认弹窗 ---------- */
+.modal-sm { max-width: 420px; }
+.modal-sub { color: var(--slate); line-height: 1.7; }
+.btn-del { background: #d92d20; color: #fff; }
+.btn-del:hover { background: #b42318; }
 
 @media (max-width: 900px) {
   .sessions, .rail-toggle { display: none; }

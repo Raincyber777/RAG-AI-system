@@ -6,7 +6,7 @@
 import { useRouter, useRoute } from 'vue-router'
 import { ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
-import { currentUser } from '@/mock/data'
+import { userProfile } from '@/store/study'
 
 const router = useRouter()
 const route = useRoute()
@@ -22,7 +22,14 @@ const navs = [
   { path: '/guide', icon: 'star', label: '使用说明' },
 ]
 
+// 用户卡片点击 → 个人设置；退出登录需二次确认
+function goSettings() {
+  sidebarOpen.value = false
+  router.push('/settings')
+}
+const showLogoutConfirm = ref(false)
 function handleLogout() {
+  showLogoutConfirm.value = false
   localStorage.removeItem('zy_token')
   router.push('/login')
 }
@@ -61,13 +68,24 @@ function handleLogout() {
       </nav>
 
       <div class="sidebar-footer">
-        <div class="user-card">
-          <div class="avatar" :style="{ background: currentUser.color }">{{ currentUser.name[0] }}</div>
+        <!-- 用户卡片：点击进入个人设置（退出登录按钮除外） -->
+        <div
+          class="user-card"
+          role="button"
+          tabindex="0"
+          title="进入个人设置"
+          aria-label="进入个人设置"
+          @click="goSettings"
+          @keydown.enter="goSettings"
+          @keydown.space.prevent="goSettings"
+        >
+          <img v-if="userProfile.avatar" :src="userProfile.avatar" class="avatar avatar-photo" :alt="userProfile.name + ' 的头像'" />
+          <div v-else class="avatar" :style="{ background: userProfile.color }">{{ userProfile.name[0] }}</div>
           <div class="flex-1 ellipsis">
-            <div class="user-name">{{ currentUser.name }}</div>
-            <div class="user-mail ellipsis">{{ currentUser.email }}</div>
+            <div class="user-name">{{ userProfile.name }}</div>
+            <div class="user-mail ellipsis">{{ userProfile.email }}</div>
           </div>
-          <button class="icon-btn" title="退出登录" @click="handleLogout"><AppIcon name="logout" :size="16" /></button>
+          <button class="icon-btn" title="退出登录" aria-label="退出登录" @click.stop="showLogoutConfirm = true"><AppIcon name="logout" :size="16" /></button>
         </div>
       </div>
     </aside>
@@ -79,6 +97,18 @@ function handleLogout() {
     <main class="content">
       <router-view />
     </main>
+
+    <!-- 退出登录确认弹窗 -->
+    <div v-if="showLogoutConfirm" class="modal-mask" @click.self="showLogoutConfirm = false">
+      <div class="modal modal-sm">
+        <div class="modal-title">退出登录</div>
+        <p class="modal-sub">确定要退出当前账号吗？退出后需重新登录才能继续使用。</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" @click="showLogoutConfirm = false">取消</button>
+          <button class="btn btn-danger" @click="handleLogout">退出登录</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -117,7 +147,15 @@ function handleLogout() {
 .nav-item.active { background: var(--tint-lavender); color: var(--brand-purple-800); }
 
 .sidebar-footer { padding: 12px; border-top: 1px solid var(--hairline-soft); }
-.user-card { display: flex; align-items: center; gap: 10px; }
+/* 用户卡片可点击进入个人设置：负 margin 扩大热区且不改变外部布局 */
+.user-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px; margin: -6px; border-radius: var(--radius-md);
+  cursor: pointer; transition: background 0.15s ease;
+}
+.user-card:hover { background: var(--surface-soft); }
+.user-card:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.avatar-photo { object-fit: cover; }
 .user-name { font-size: 13px; font-weight: 600; }
 .user-mail { font-size: 11px; color: var(--stone); }
 .icon-btn {
@@ -125,6 +163,11 @@ function handleLogout() {
   padding: 6px; border-radius: var(--radius-sm); display: flex;
 }
 .icon-btn:hover { background: var(--surface); color: var(--error); }
+
+/* 退出登录确认弹窗 */
+.modal-sm { max-width: 400px; }
+.btn-danger { background: #d92d20; border-color: #d92d20; }
+.btn-danger:hover { background: #b42318; }
 
 .mask { display: none; }
 

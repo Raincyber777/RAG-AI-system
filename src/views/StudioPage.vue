@@ -16,7 +16,7 @@ const route = useRoute()
 const router = useRouter()
 
 // ---------- 上传材料 ----------
-type FileKind = 'audio' | 'image' | 'video'
+type FileKind = 'audio' | 'image' | 'video' | 'ppt' | 'other'
 interface InputFile {
   id: string
   name: string
@@ -26,9 +26,11 @@ interface InputFile {
 }
 
 const KIND_META: Record<FileKind, { label: string; icon: string; tint: string }> = {
-  audio: { label: '录音', icon: 'headphones', tint: 'tint-sky' },
+  audio: { label: '音频', icon: 'headphones', tint: 'tint-sky' },
   image: { label: '图片', icon: 'image', tint: 'tint-mint' },
   video: { label: '视频', icon: 'film', tint: 'tint-rose' },
+  ppt: { label: 'PPT', icon: 'layers', tint: 'tint-yellow-bold' },
+  other: { label: '其他', icon: 'file', tint: 'tint-peach' },
 }
 
 const inputFiles = ref<InputFile[]>([])
@@ -39,17 +41,21 @@ const courseName = ref('')
 const MAX_FILES = 12
 
 const ACCEPT_EXTS: Record<FileKind, string[]> = {
-  audio: ['mp3', 'wav', 'm4a', 'aac', 'flac'],
-  image: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-  video: ['mp4', 'webm', 'mov'],
+  audio: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'oga', 'opus', 'amr', 'wma'],
+  image: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg', 'heic', 'heif'],
+  video: ['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv', 'ts'],
+  ppt: ['ppt', 'pptx', 'pps', 'ppsx'],
+  other: ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'],
 }
 const acceptAttr = Object.values(ACCEPT_EXTS).flat().map((e) => '.' + e).join(',')
 
 function detectKind(name: string, type: string): FileKind | null {
   const ext = (name.split('.').pop() || '').toLowerCase()
+  if (ACCEPT_EXTS.ppt.includes(ext)) return 'ppt'
   if (type.startsWith('audio/') || ACCEPT_EXTS.audio.includes(ext)) return 'audio'
   if (type.startsWith('image/') || ACCEPT_EXTS.image.includes(ext)) return 'image'
   if (type.startsWith('video/') || ACCEPT_EXTS.video.includes(ext)) return 'video'
+  if (type === 'application/pdf' || ACCEPT_EXTS.other.includes(ext)) return 'other'
   return null
 }
 
@@ -100,7 +106,7 @@ function removeFile(id: string) {
 }
 
 const kindCount = computed(() => {
-  const c: Record<FileKind, number> = { audio: 0, image: 0, video: 0 }
+  const c: Record<FileKind, number> = { audio: 0, image: 0, video: 0, ppt: 0, other: 0 }
   for (const f of inputFiles.value) c[f.kind]++
   return c
 })
@@ -126,8 +132,14 @@ function buildSteps(files: InputFile[]): AgentStep[] {
     steps.push({ key: 'extract', label: '提取音频', desc: 'ffmpeg.wasm 从视频中分离音轨', icon: 'film', status: 'pending' })
     steps.push({ key: 'frames', label: '抽取关键帧', desc: '每 5 秒抽帧 · 感知哈希去重 · 最多 15 帧', icon: 'image', status: 'pending' })
   }
-  if (kinds.has('video') || kinds.has('image')) {
-    steps.push({ key: 'vision', label: '图片理解', desc: '多模态大模型识别板书 / PPT 文字与公式', icon: 'image', status: 'pending' })
+  if (kinds.has('ppt')) {
+    steps.push({ key: 'ppt', label: '演示文稿解析', desc: '逐页导出为图片 · 提取讲者备注', icon: 'layers', status: 'pending' })
+  }
+  if (kinds.has('video') || kinds.has('image') || kinds.has('ppt')) {
+    steps.push({ key: 'vision', label: '图片理解', desc: '多模态大模型识别板书 / 幻灯片文字与公式', icon: 'image', status: 'pending' })
+  }
+  if (kinds.has('other')) {
+    steps.push({ key: 'docs', label: '讲义文本抽取', desc: 'PDF / Word / 文本 · 段落切分与公式定位', icon: 'file', status: 'pending' })
   }
   if (kinds.has('audio') || kinds.has('video')) {
     steps.push({ key: 'asr', label: '语音转写', desc: 'Whisper 生成带时间戳的文字稿', icon: 'headphones', status: 'pending' })
@@ -173,9 +185,9 @@ function sectionVisible(key: string) {
 // 演示纪要内容（接入真实模型后由融合生成接口返回）
 function makeDemoNote(title: string, course: string, files: InputFile[]): ClassNote {
   const kinds = new Set(files.map((f) => f.kind))
-  const imgCount = files.filter((f) => f.kind === 'image').length
-  const duration = kinds.has('audio') ? '录音 45 分钟' : kinds.has('video') ? '视频 12 分钟' : `图片 ${imgCount} 张`
-  const keyframes = kinds.has('video') ? 9 : kinds.has('image') ? Math.min(12, Math.max(4, imgCount * 2)) : 0
+  const visualCount = files.filter((f) => f.kind === 'image' || f.kind === 'ppt').length
+  const duration = kinds.has('audio') ? '录音 45 分钟' : kinds.has('video') ? '视频 12 分钟' : visualCount > 0 ? `图片 ${visualCount} 张` : '讲义 2 份'
+  const keyframes = kinds.has('video') ? 9 : visualCount > 0 ? Math.min(12, Math.max(4, visualCount * 2)) : 0
   return {
     id: 'n' + Date.now(),
     title,
@@ -432,7 +444,7 @@ onBeforeUnmount(clearAllTimers)
     <header class="page-head">
       <div>
         <h1 class="h2">课堂纪要工作台</h1>
-        <p class="text-sm">上传课堂录音、板书照片或短视频，Agent 自动转写、理解并生成可追问的结构化纪要</p>
+        <p class="text-sm">上传课堂音频、板书照片、PPT 或讲义，Agent 自动转写、理解并生成可追问的结构化纪要</p>
       </div>
       <div class="stat-chips">
         <div class="chip tint-sky"><b>{{ inputFiles.length }}</b> 个材料</div>
@@ -448,7 +460,7 @@ onBeforeUnmount(clearAllTimers)
           :class="{ dragging, disabled: genState === 'running' || genState === 'streaming' }"
           role="button"
           tabindex="0"
-          aria-label="上传课堂材料：点击选择或拖拽录音、图片、视频文件"
+          aria-label="上传课堂材料：点击选择或拖拽音频、图片、视频、PPT 或讲义文件"
           @click="pickFiles"
           @keydown.enter.prevent="pickFiles"
           @dragover.prevent="dragging = true"
@@ -458,9 +470,11 @@ onBeforeUnmount(clearAllTimers)
           <div class="upload-icon"><AppIcon name="upload" :size="26" /></div>
           <div class="h4">拖拽材料到此处，或 <span class="link-text">点击上传</span></div>
           <div class="kind-hints">
-            <span class="kind-hint"><AppIcon name="headphones" :size="13" /> 录音 mp3 / wav / m4a</span>
-            <span class="kind-hint"><AppIcon name="image" :size="13" /> 板书 / PPT 图片</span>
-            <span class="kind-hint"><AppIcon name="film" :size="13" /> 视频 mp4 / webm</span>
+            <span class="kind-hint"><AppIcon name="headphones" :size="13" /> 音频 mp3 / wav / m4a 等</span>
+            <span class="kind-hint"><AppIcon name="image" :size="13" /> 图片 jpg / png / webp 等</span>
+            <span class="kind-hint"><AppIcon name="film" :size="13" /> 视频 mp4 / mov / webm 等</span>
+            <span class="kind-hint"><AppIcon name="layers" :size="13" /> PPT ppt / pptx</span>
+            <span class="kind-hint"><AppIcon name="file" :size="13" /> 其他 pdf / word / txt</span>
           </div>
           <input ref="fileInput" type="file" multiple hidden :accept="acceptAttr" @change="onFileChange" />
         </div>

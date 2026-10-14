@@ -85,7 +85,7 @@ function initCharts() {
   if (pieRef.value) {
     const c = echarts.init(pieRef.value)
     c.setOption({
-      tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
+      tooltip: { trigger: 'item', formatter: '{b}: {c} 份 ({d}%)' },
       legend: { bottom: 0, icon: 'circle', textStyle: { color: '#5d5b54', fontSize: 12 } },
       color: NOTION_PALETTE,
       series: [
@@ -96,10 +96,11 @@ function initCharts() {
           itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 6 },
           label: { show: false },
           data: [
-            { name: '课堂录音', value: 46 },
-            { name: '板书 / PPT 图片', value: 32 },
-            { name: '课堂短视频', value: 18 },
-            { name: '混合上传', value: 12 },
+            { name: '音频', value: 38 },
+            { name: '图片', value: 27 },
+            { name: '视频', value: 18 },
+            { name: 'PPT', value: 12 },
+            { name: '其他', value: 5 },
           ],
         },
       ],
@@ -190,7 +191,7 @@ onBeforeUnmount(() => {
         <div class="chart-head">
           <div>
             <div class="h4">上传材料类型占比</div>
-            <div class="text-caption">录音 / 图片 / 视频的分布</div>
+            <div class="text-caption">音频 / 图片 / 视频 / PPT / 其他 的分布</div>
           </div>
         </div>
         <div ref="pieRef" class="chart pie"></div>
