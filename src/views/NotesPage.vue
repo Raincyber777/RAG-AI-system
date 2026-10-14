@@ -168,7 +168,7 @@ function retryNote(n: ClassNote) {
         <p class="modal-sub">确定删除「{{ deleteTarget.title }}」吗？其转写稿、关键帧与知识片段将一并清除，此操作不可恢复。</p>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="deleteTarget = null">取消</button>
-          <button class="btn btn-del" @click="confirmDelete">确认删除</button>
+          <button class="btn btn-danger" @click="confirmDelete">确认删除</button>
         </div>
       </div>
     </div>
@@ -222,8 +222,6 @@ function retryNote(n: ClassNote) {
 
 .modal-sm { max-width: 440px; }
 .modal-sub { color: var(--slate); line-height: 1.7; }
-.btn-del { background: var(--error); color: #fff; }
-.btn-del:hover { background: #b42318; }
 
 @media (max-width: 720px) {
   .page { padding: 20px 16px 40px; }

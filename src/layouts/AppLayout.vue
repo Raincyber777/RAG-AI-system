@@ -166,8 +166,6 @@ function handleLogout() {
 
 /* 退出登录确认弹窗 */
 .modal-sm { max-width: 400px; }
-.btn-danger { background: #d92d20; border-color: #d92d20; }
-.btn-danger:hover { background: #b42318; }
 
 .mask { display: none; }
 

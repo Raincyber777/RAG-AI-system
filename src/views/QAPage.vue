@@ -677,7 +677,7 @@ onBeforeUnmount(() => {
         <p class="modal-sub">确定删除「{{ deleteTarget.title }}」吗？该对话的聊天记录将被清除，此操作不可恢复。</p>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="deleteTarget = null">取消</button>
-          <button class="btn btn-del" @click="confirmDelete">删除</button>
+          <button class="btn btn-danger" @click="confirmDelete">删除</button>
         </div>
       </div>
     </div>
@@ -1014,11 +1014,9 @@ onBeforeUnmount(() => {
 }
 .row-user.flash .bubble-user { animation: msg-flash 1.3s ease-out; }
 
-/* ---------- 删除对话确认弹窗 ---------- */
+/* ---------- 删除对话确认弹窗（危险按钮用全局 .btn-danger） ---------- */
 .modal-sm { max-width: 420px; }
 .modal-sub { color: var(--slate); line-height: 1.7; }
-.btn-del { background: #d92d20; color: #fff; }
-.btn-del:hover { background: #b42318; }
 
 @media (max-width: 900px) {
   .sessions, .rail-toggle { display: none; }

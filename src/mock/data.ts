@@ -231,23 +231,21 @@ export const currentUser = {
   color: '#5645d4',
 }
 
-// ---------- 反馈 ----------
+// ---------- 反馈（不区分类型，回访统一走注册邮箱） ----------
 export interface FeedbackItem {
   id: string
-  type: string
   title: string
   desc: string
-  status: 'pending' | 'processing' | 'resolved'
+  status: 'pending' | 'resolved'
   time: string
 }
 
 export const feedbackStatusText: Record<FeedbackItem['status'], string> = {
-  pending: '已提交',
-  processing: '处理中',
+  pending: '待处理',
   resolved: '已解决',
 }
 
 export const myFeedbacks: FeedbackItem[] = [
-  { id: 'f1', type: '功能异常', title: '视频关键帧抽帧失败', desc: '上传超过 50MB 的 mp4 后，浏览器端 ffmpeg 抽帧卡死，希望增加提示或压缩。', status: 'processing', time: '2026-10-11 16:20' },
-  { id: 'f2', type: '体验建议', title: '纪要导出希望保留时间戳链接', desc: '导出 Markdown 时希望能保留录音时间戳，方便复习时回听。', status: 'resolved', time: '2026-10-09 10:05' },
+  { id: 'f1', title: '视频关键帧抽帧失败', desc: '上传超过 50MB 的 mp4 后，浏览器端 ffmpeg 抽帧卡死，希望增加提示或压缩。', status: 'pending', time: '2026-10-11 16:20' },
+  { id: 'f2', title: '纪要导出希望保留时间戳链接', desc: '导出 Markdown 时希望能保留录音时间戳，方便复习时回听。', status: 'resolved', time: '2026-10-09 10:05' },
 ]
