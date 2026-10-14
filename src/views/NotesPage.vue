@@ -7,7 +7,8 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
-import { classNotes, removeClassNote, updateNote } from '@/store/study'
+import AppSelect from '@/components/AppSelect.vue'
+import { classNotes, removeClassNote, updateNote, activeCourses } from '@/store/study'
 import type { ClassNote } from '@/mock/data'
 import { buildNoteMarkdown, downloadText } from '@/utils/exportNote'
 
@@ -15,12 +16,23 @@ const router = useRouter()
 
 const search = ref('')
 const filter = ref<'all' | 'done' | 'failed'>('all')
+const courseFilter = ref('')
+// 课程筛选 = 名下已有纪要的课程：工作台新课程须成功生成纪要后才出现在这里；删除 / 重命名自动同步
+const courseOptions = computed(() => [
+  { label: '全部课程', value: '' },
+  ...activeCourses.value.map((c) => ({ label: c, value: c })),
+])
+// 当前筛选的课程被删除后自动复位为「全部课程」
+watch(courseOptions, (opts) => {
+  if (courseFilter.value && !opts.some((o) => o.value === courseFilter.value)) courseFilter.value = ''
+})
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return classNotes.value.filter((n) => {
     if (filter.value === 'done' && n.status !== 'done') return false
     if (filter.value === 'failed' && n.status !== 'failed') return false
+    if (courseFilter.value && n.course !== courseFilter.value) return false
     if (!q) return true
     return n.title.toLowerCase().includes(q) || n.course.toLowerCase().includes(q)
   })
@@ -79,8 +91,6 @@ function retryNote(n: ClassNote) {
         { term: '泰勒公式', detail: 'f(x) = Σ f⁽ⁿ⁾(x₀)/n! · (x-x₀)ⁿ + Rₙ(x)，其中 Rₙ 为余项', cite: 'PPT 第3页' },
       ],
       emphasized: ['期末必考：用泰勒展开求 undefined 型极限，至少展开到分母的最高阶'],
-      qa: [{ q: '展开到几阶才够？', a: '看分母：分母是 x³ 就至少展开到 3 阶，上下同阶时再高一阶保险。' }],
-      todos: ['完成教材 P214 习题 4-3：第 1、3、7 题'],
     })
   }, 2000)
 }
@@ -108,9 +118,12 @@ function retryNote(n: ClassNote) {
         <button class="pill-tab" :class="{ active: filter === 'done' }" @click="filter = 'done'">已完成 · {{ doneCount }}</button>
         <button class="pill-tab" :class="{ active: filter === 'failed' }" @click="filter = 'failed'">失败 · {{ failedCount }}</button>
       </div>
-      <div class="search-box">
-        <AppIcon name="search" :size="15" />
-        <input v-model="search" class="search-input" placeholder="搜索课堂主题 / 课程名" />
+      <div class="filter-right">
+        <AppSelect v-model="courseFilter" :options="courseOptions" class="course-select" aria-label="按课程筛选纪要" />
+        <div class="search-box">
+          <AppIcon name="search" :size="15" />
+          <input v-model="search" class="search-input" placeholder="搜索课堂主题 / 课程名" />
+        </div>
       </div>
     </div>
 
@@ -183,6 +196,8 @@ function retryNote(n: ClassNote) {
 .chip b { font-weight: 700; margin-right: 2px; }
 
 .filter-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+.filter-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.course-select { width: 180px; }
 .search-box {
   display: flex; align-items: center; gap: 8px; width: 260px; padding: 0 12px; height: 38px;
   background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--radius-md);
@@ -226,6 +241,8 @@ function retryNote(n: ClassNote) {
 @media (max-width: 720px) {
   .page { padding: 20px 16px 40px; }
   .filter-row { align-items: stretch; flex-direction: column; }
+  .filter-right { flex-direction: column; align-items: stretch; }
+  .course-select { width: 100%; }
   .search-box { width: 100%; }
 }
 </style>

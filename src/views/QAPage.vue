@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 课堂追问：基于课堂纪要知识库的多轮问答（核心前台）
- * - 左侧：对话列表（新增 / 置顶 / 重命名 / 删除，可关联课堂）+ 搜索 + 常显滚动条
- * - 右侧：聊天窗口（流式回答 / 录音时间戳与图片来源引用 / 语音输入）
+ * 智能问答：基于课堂纪要知识库的多轮问答（核心前台）
+ * - 左侧：对话列表（新增 / 置顶 / 重命名 / 删除，可关联课堂）+ 搜索 + 常显滚动条（折叠状态持久化）
+ * - 右侧：聊天窗口（流式回答 / 录音时间戳与图片来源引用 / 语音输入 / 附件上传）
  * - 提问记录导航：千问式右侧悬浮面板，悬停展开、点击定位，固定在滚动条左侧不遮挡
  * 回答为前端演示，接入真实模型后仅需替换 runStages / streamAnswer 中的回调
  */
@@ -10,7 +10,8 @@ import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount } 
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import { classNotes } from '@/store/study'
-import { initialMessages, demoReply, type ChatMessage, type Citation } from '@/mock/data'
+import { initialMessages, demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
+import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
 const route = useRoute()
 
@@ -30,7 +31,10 @@ const qaSessions = ref<QaSession[]>(
 )
 const sessionSearch = ref('')
 const activeSessionId = ref('')
-const sessionsOpen = ref(true) // 会话面板可横向收起 / 展开
+// 会话面板可横向收起 / 展开；折叠状态持久化，跳转其他页面再回来保持上次的开合
+const SIDEBAR_KEY = 'zy_qa_sidebar_open'
+const sessionsOpen = ref(localStorage.getItem(SIDEBAR_KEY) !== '0')
+watch(sessionsOpen, (v) => localStorage.setItem(SIDEBAR_KEY, v ? '1' : '0'))
 
 // 工作台新完成的纪要 → 自动出现为一条对话
 watch(
@@ -279,17 +283,162 @@ function jumpTo(id: string) {
 // ---------- 提问记录导航 ----------
 // 千问式交互：固定在消息区右缘（滚动条左侧），纯 CSS 悬停 / 键盘聚焦展开，点击条目定位
 
+// ---------- 附件上传（输入框左下角“+”菜单；格式与工作台上传完全一致，最多 8 个，支持拖拽） ----------
+type AttachKind = UploadKind
+interface AttachItem {
+  id: string
+  name: string
+  kind: AttachKind
+  size: string
+  preview?: string
+}
+const MAX_ATTACH = 8
+
+const ATTACH_MENU: { kind: AttachKind; label: string; hint: string }[] = [
+  { kind: 'image', label: '上传图片', hint: 'jpg / png / webp / gif' },
+  { kind: 'ppt', label: '上传 PPT', hint: 'ppt / pptx 演示文稿' },
+  { kind: 'audio', label: '上传音频', hint: 'mp3 / wav / m4a 等' },
+  { kind: 'video', label: '上传视频', hint: 'mp4 / mov / mkv 等' },
+  { kind: 'doc', label: '更多格式文档', hint: 'pdf / word / excel 等' },
+]
+
+const attachments = ref<AttachItem[]>([])
+const attachMenuOpen = ref(false)
+const attachMenuRoot = ref<HTMLElement>()
+const attachInput = ref<HTMLInputElement>()
+const attachAccept = ref('')
+const attachDragover = ref(false)
+const attachTip = ref('')
+let attachTipTimer: number | null = null
+let dragDepth = 0
+
+function flashAttachTip(msg: string) {
+  attachTip.value = msg
+  if (attachTipTimer) window.clearTimeout(attachTipTimer)
+  attachTipTimer = window.setTimeout(() => { attachTip.value = '' }, 2600)
+}
+
+function toggleAttachMenu() {
+  attachMenuOpen.value = !attachMenuOpen.value
+}
+function closeAttachMenu() {
+  attachMenuOpen.value = false
+}
+
+function pickAttach(kind: AttachKind) {
+  if (attachments.value.length >= MAX_ATTACH) {
+    flashAttachTip(`最多同时上传 ${MAX_ATTACH} 个文件，请先移除部分附件`)
+    closeAttachMenu()
+    return
+  }
+  attachAccept.value = UPLOAD_ACCEPT[kind]
+  closeAttachMenu()
+  nextTick(() => attachInput.value?.click())
+}
+
+function onAttachChange(e: Event) {
+  handleAttachFiles((e.target as HTMLInputElement).files)
+  ;(e.target as HTMLInputElement).value = ''
+}
+
+function handleAttachFiles(list: FileList | null | undefined) {
+  if (!list) return
+  let accepted = 0
+  let dupCount = 0
+  for (const f of Array.from(list)) {
+    // 最多同时添加 MAX_ATTACH 个附件（相同或不同格式合计），超出部分给出提示
+    if (attachments.value.length >= MAX_ATTACH) {
+      flashAttachTip(`最多同时上传 ${MAX_ATTACH} 个文件，超出部分未添加`)
+      break
+    }
+    const kind = detectUploadKind(f.name)
+    if (!kind) continue
+    if (attachments.value.some((x) => x.name === f.name && x.size === formatFileSize(f.size))) {
+      dupCount++
+      continue
+    }
+    attachments.value.push({
+      id: 'a' + Date.now() + Math.random().toString(36).slice(2, 5),
+      name: f.name,
+      kind,
+      size: formatFileSize(f.size),
+      preview: kind === 'image' ? URL.createObjectURL(f) : undefined,
+    })
+    accepted++
+  }
+  if (accepted === 0 && attachments.value.length < MAX_ATTACH) {
+    flashAttachTip(dupCount > 0 ? '所选文件已在附件中' : '仅支持音频、图片、视频、PPT 与文档格式')
+  }
+}
+
+function removeAttachment(id: string) {
+  const idx = attachments.value.findIndex((a) => a.id === id)
+  if (idx >= 0) {
+    const item = attachments.value[idx]
+    if (item?.preview) URL.revokeObjectURL(item.preview)
+    attachments.value.splice(idx, 1)
+  }
+}
+
+// 拖拽添加附件：仅对文件拖入高亮；dragenter/leave 计数避免划过子元素时闪烁
+function onComposerDragEnter(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  dragDepth++
+  attachDragover.value = true
+}
+function onComposerDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+}
+function onComposerDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) attachDragover.value = false
+}
+function onComposerDrop(e: DragEvent) {
+  dragDepth = 0
+  attachDragover.value = false
+  handleAttachFiles(e.dataTransfer?.files)
+}
+
+// 附件菜单：点击外部 / Esc 关闭
+function onDocClick(e: MouseEvent) {
+  if (attachMenuOpen.value && attachMenuRoot.value && !attachMenuRoot.value.contains(e.target as Node)) {
+    attachMenuOpen.value = false
+  }
+}
+function onDocKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeAttachMenu()
+}
+
+// 附件预览 objectURL 回收（待发送的 + 已随消息展示的）
+function revokeAllAttachPreviews() {
+  for (const a of attachments.value) {
+    if (a.preview) URL.revokeObjectURL(a.preview)
+  }
+  for (const list of Object.values(messageStore)) {
+    for (const m of list) {
+      for (const a of m.attachments ?? []) {
+        if (a.preview) URL.revokeObjectURL(a.preview)
+      }
+    }
+  }
+}
+
 // ---------- 发送 ----------
 function send() {
   const text = input.value.trim()
-  if (!text || isTyping.value || isStreaming.value || !activeSessionId.value) return
+  if ((!text && !attachments.value.length) || isTyping.value || isStreaming.value || !activeSessionId.value) return
 
   messagesFor(activeSessionId.value).push({
     id: 'u' + Date.now(),
     role: 'user',
     content: text,
+    attachments: attachments.value.length ? (attachments.value.map((a) => ({ ...a })) as ChatAttachment[]) : undefined,
     time: now(),
   })
+  // 附件随消息发出（预览地址由消息继续持有展示），输入区清空
+  attachments.value = []
   input.value = ''
   scrollToBottom()
   isTyping.value = true
@@ -417,6 +566,8 @@ function now() {
 
 // 初始对话：支持 /qa?note=id 直达；首个对话预置一轮演示
 onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onDocKey)
   const q = route.query.note
   const id = typeof q === 'string' ? q : ''
   const exists = qaSessions.value.some((s) => s.id === id)
@@ -432,6 +583,10 @@ onBeforeUnmount(() => {
   clearStageTimers()
   if (streamTimer) window.clearInterval(streamTimer)
   if (flashTimer) window.clearTimeout(flashTimer)
+  if (attachTipTimer) window.clearTimeout(attachTipTimer)
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onDocKey)
+  revokeAllAttachPreviews()
 })
 </script>
 
@@ -547,7 +702,16 @@ onBeforeUnmount(() => {
               :class="{ flash: flashId === msg.id }"
               :data-mid="msg.id"
             >
-              <div class="bubble-user">{{ msg.content }}</div>
+              <div class="bubble-user">
+                <div v-if="msg.attachments?.length" class="ba-list">
+                  <span v-for="a in msg.attachments" :key="a.id" class="ba-chip">
+                    <img v-if="a.preview" :src="a.preview" class="ba-thumb" alt="附件预览" />
+                    <AppIcon v-else :name="UPLOAD_KIND_META[a.kind].icon" :size="11" />
+                    <span class="ellipsis">{{ a.name }}</span>
+                  </span>
+                </div>
+                <div v-if="msg.content" class="bubble-text">{{ msg.content }}</div>
+              </div>
             </div>
 
             <div v-else class="row-ai fade-in" :data-mid="msg.id">
@@ -640,14 +804,70 @@ onBeforeUnmount(() => {
 
       <!-- 输入区 -->
       <footer class="composer">
-        <div class="composer-box">
-          <textarea
-            v-model="input"
-            class="composer-input"
-            :placeholder="listening ? '正在聆听，请说话…' : '向课堂知识库提问…（Enter 发送 / Shift+Enter 换行）'"
-            rows="1"
-            @keydown.enter.exact.prevent="send"
-          ></textarea>
+        <div
+          class="composer-box"
+          :class="{ dragover: attachDragover }"
+          @dragenter="onComposerDragEnter"
+          @dragover="onComposerDragOver"
+          @dragleave="onComposerDragLeave"
+          @drop.prevent="onComposerDrop"
+        >
+          <div v-if="attachDragover" class="drop-overlay">
+            <AppIcon name="upload" :size="18" />
+            <span>松开以添加附件（音频 / 图片 / 视频 / PPT / 文档，最多 {{ MAX_ATTACH }} 个）</span>
+          </div>
+
+          <!-- 左下角“+”：附件类型菜单 -->
+          <div ref="attachMenuRoot" class="attach-wrap">
+            <button
+              type="button"
+              class="attach-btn"
+              :class="{ active: attachMenuOpen }"
+              title="添加附件"
+              aria-label="添加附件：上传音频、图片、视频、PPT 或文档"
+              @click="toggleAttachMenu"
+            >
+              <AppIcon name="plus" :size="16" />
+            </button>
+            <Transition name="drop">
+              <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="选择附件类型">
+                <button
+                  v-for="m in ATTACH_MENU"
+                  :key="m.kind"
+                  type="button"
+                  class="attach-opt"
+                  role="menuitem"
+                  @click="pickAttach(m.kind)"
+                >
+                  <span class="ao-ico" :class="UPLOAD_KIND_META[m.kind].tint"><AppIcon :name="UPLOAD_KIND_META[m.kind].icon" :size="14" /></span>
+                  <span class="ao-text">
+                    <b>{{ m.label }}</b>
+                    <i>{{ m.hint }}</i>
+                  </span>
+                </button>
+              </div>
+            </Transition>
+          </div>
+
+          <div class="composer-mid">
+            <div v-if="attachments.length" class="attach-list">
+              <div v-for="a in attachments" :key="a.id" class="attach-chip">
+                <img v-if="a.preview" :src="a.preview" class="ac-thumb" alt="图片附件预览" />
+                <span v-else class="ac-badge" :class="UPLOAD_KIND_META[a.kind].tint"><AppIcon :name="UPLOAD_KIND_META[a.kind].icon" :size="12" /></span>
+                <span class="ac-name ellipsis" :title="a.name">{{ a.name }}</span>
+                <span class="ac-size">{{ a.size }}</span>
+                <button class="ac-x" :aria-label="'移除附件 ' + a.name" @click="removeAttachment(a.id)"><AppIcon name="x" :size="12" /></button>
+              </div>
+            </div>
+            <textarea
+              v-model="input"
+              class="composer-input"
+              :placeholder="listening ? '正在聆听，请说话…' : '向课堂知识库提问…（Enter 发送 / Shift+Enter 换行）'"
+              rows="1"
+              @keydown.enter.exact.prevent="send"
+            ></textarea>
+          </div>
+
           <button
             type="button"
             class="voice-btn"
@@ -661,11 +881,13 @@ onBeforeUnmount(() => {
           <button v-if="isTyping || isStreaming" class="send-btn stop" title="停止生成" aria-label="停止生成" @click="stopGenerating">
             <AppIcon name="square" :size="14" />
           </button>
-          <button v-else class="send-btn" title="发送" aria-label="发送" :disabled="!input.trim()" @click="send">
+          <button v-else class="send-btn" title="发送" aria-label="发送" :disabled="!input.trim() && !attachments.length" @click="send">
             <AppIcon name="send" :size="16" />
           </button>
         </div>
-        <p v-if="voiceTip" class="composer-tip voice-tip">{{ voiceTip }}</p>
+        <input ref="attachInput" type="file" multiple hidden :accept="attachAccept" @change="onAttachChange" />
+        <p v-if="attachTip" class="composer-tip attach-tip"><AppIcon name="alert" :size="12" /> {{ attachTip }}</p>
+        <p v-else-if="voiceTip" class="composer-tip voice-tip">{{ voiceTip }}</p>
         <p v-else class="composer-tip">回答由 AI 基于课堂纪要生成，请以引用原文为准</p>
       </footer>
     </section>
@@ -953,6 +1175,79 @@ onBeforeUnmount(() => {
 .send-btn.stop:hover { background: var(--charcoal); }
 .composer-tip { text-align: center; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 .voice-tip { color: var(--link-blue); font-weight: 500; }
+.attach-tip { color: var(--error); font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 4px; }
+
+/* ---------- 附件：左下角“+”菜单 / 附件条 / 拖拽高亮 ---------- */
+.attach-wrap { position: relative; flex-shrink: 0; }
+.attach-btn {
+  width: 38px; height: 38px; border: none; cursor: pointer;
+  border-radius: var(--radius-md); background: transparent; color: var(--steel);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.attach-btn:hover, .attach-btn.active { background: var(--tint-lavender); color: var(--primary); }
+.attach-menu {
+  position: absolute; bottom: calc(100% + 10px); left: 0; z-index: 40;
+  width: 256px; padding: 5px;
+  background: var(--canvas); border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-modal);
+}
+.attach-opt {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  font-family: inherit; border: none; background: transparent; cursor: pointer;
+  padding: 8px 9px; border-radius: var(--radius-md); transition: background 0.12s ease;
+}
+.attach-opt:hover, .attach-opt:focus-visible { background: var(--surface-soft); outline: none; }
+.ao-ico {
+  width: 30px; height: 30px; border-radius: var(--radius-sm); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ao-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ao-text b { font-size: 13px; font-weight: 600; color: var(--ink); }
+.ao-text i { font-style: normal; font-size: 11.5px; color: var(--stone); }
+.drop-enter-active, .drop-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.drop-enter-from, .drop-leave-to { opacity: 0; transform: translateY(-5px); }
+
+.composer-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-chip {
+  display: flex; align-items: center; gap: 6px; max-width: 210px;
+  padding: 4px 6px; background: var(--surface-soft); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); font-size: 12px;
+}
+.ac-thumb { width: 24px; height: 24px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.ac-badge {
+  width: 24px; height: 24px; border-radius: 4px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ac-name { font-weight: 500; color: var(--ink); }
+.ac-size { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.ac-x {
+  border: none; background: transparent; color: var(--stone); padding: 2px;
+  border-radius: var(--radius-sm); display: flex; cursor: pointer; flex-shrink: 0;
+  transition: all 0.12s ease;
+}
+.ac-x:hover { color: var(--error); background: #fdecec; }
+
+/* 拖拽文件悬停：输入框高亮 + 覆盖提示 */
+.composer-box.dragover { border-color: var(--primary); box-shadow: 0 0 0 3px var(--tint-lavender); }
+.drop-overlay {
+  position: absolute; inset: 0; z-index: 5; border-radius: inherit;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--tint-lavender);
+  font-size: 13px; font-weight: 600; color: var(--brand-purple-800);
+  pointer-events: none;
+}
+
+/* 消息气泡里的附件 */
+.ba-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.ba-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 190px;
+  background: rgba(255, 255, 255, 0.16); border-radius: var(--radius-sm);
+  padding: 3px 8px; font-size: 12px;
+}
+.ba-chip .ellipsis { min-width: 0; }
+.ba-thumb { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
 
 /* ---------- 回到底部 ---------- */
 .to-bottom {

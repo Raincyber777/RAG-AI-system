@@ -9,23 +9,25 @@ import AppIcon from '@/components/AppIcon.vue'
 const steps = [
   { n: 1, title: '上传课堂材料', desc: '进入「课堂纪要」工作台，把课堂录音（mp3/wav/m4a）、板书 PPT 照片或课堂短视频拖进上传区，填好课堂主题', to: '/studio', toText: '去上传' },
   { n: 2, title: 'Agent 自动处理', desc: '工作台会按材料类型编排步骤：提取音频 → 抽取关键帧 → 图片理解 → 语音转写 → 融合生成纪要 → 向量入库，全程可视化', to: '', toText: '' },
-  { n: 3, title: '看纪要 · 继续追问', desc: '纪要按「主题 / 知识点 / 定义公式 / 教师重点 / 学生问答 / 作业」六个板块生成，每个结论都带录音时间戳或图片页码，随时溯源追问', to: '/qa', toText: '去追问' },
+  { n: 3, title: '看纪要 · 继续追问', desc: '纪要按「主题 / 知识点 / 定义公式 / 重点问题」等板块生成，每个结论都带录音时间戳或图片页码，随时溯源追问', to: '/qa', toText: '去追问' },
 ]
 
 const boards = [
   { icon: 'spark', tint: 'tint-yellow-bold', name: '课堂纪要工作台', desc: '核心板块。多模态上传 + Agent 工作流可视化 + 结构化纪要流式生成，支持中途停止与重新生成，完成后一键导出 Markdown。' },
-  { icon: 'chat', tint: 'tint-mint', name: '课堂追问', desc: '基于课堂纪要知识库的多轮问答。回答下方展示引用来源卡片：录音第几分钟、哪张 PPT / 板书，可点赞 / 重新生成，支持语音提问。' },
+  { icon: 'chat', tint: 'tint-mint', name: '智能问答', desc: '基于课堂纪要知识库的多轮问答。回答下方展示引用来源卡片：录音第几分钟、哪张 PPT / 板书，可点赞 / 重新生成，支持语音提问与附件上传。' },
   { icon: 'book', tint: 'tint-sky', name: '我的纪要', desc: '所有课堂纪要的卡片视图：查看回放原文、继续追问、导出 Markdown、删除。工作台新生成的纪要会实时出现在这里。' },
-  { icon: 'chart', tint: 'tint-lavender', name: '数据看板', desc: '课堂总数、转写时长、关键帧解析量、每日追问趋势、材料类型占比与高频知识点排行。' },
-  { icon: 'sliders', tint: 'tint-peach', name: '个人设置', desc: '转写设置（模型 / 语言 / 时间戳粒度）、视频抽帧（间隔 / 最大关键帧数 / 去重）、纪要生成偏好与问答调优。' },
-  { icon: 'flag', tint: 'tint-rose', name: '问题反馈', desc: '遇到 Bug 或有建议？提交后可在“我的反馈”里跟踪处理进度（已提交 → 处理中 → 已解决）。' },
+  { icon: 'edit', tint: 'tint-yellow', name: '自创题练习', desc: '基于已完成的课堂纪要自动出题：选择题（随机单选 / 多选 / 不定项）、判断、填空、简答，可按课程与章节筛选；作答后即时批改并展示解析，错题自动进入错题本，支持按章节重练与分页浏览。' },
+  { icon: 'chart', tint: 'tint-lavender', name: '数据看板', desc: '课堂总数、转写时长、关键帧解析量、每日追问趋势、材料类型占比、高频知识点排行与热门追问词云。' },
+  { icon: 'sliders', tint: 'tint-peach', name: '个人设置', desc: '维护个人资料、头像、手机号 / 邮箱与登录密码。处理与生成参数由系统统一按最佳配置运行，无需手动调整。' },
+  { icon: 'flag', tint: 'tint-rose', name: '问题反馈', desc: '遇到 Bug 或有建议？填写标题与描述、附上截图提交即可，提交后会收到确认提示。' },
 ]
 
 const tips = [
   { icon: 'link', text: '答案中的 [1][2] 是引用角标，点开“引用来源”可核对录音原文或板书原图，不怕 AI 编造' },
   { icon: 'headphones', text: '纪要里的「录音 03:24」角标点开可查看该时间点的转写原文，复习时精准回听' },
-  { icon: 'mic', text: '追问输入框支持语音提问（需 HTTPS 环境）；Enter 发送、Shift+Enter 换行' },
-  { icon: 'refresh', text: '视频材料会自动按设定间隔抽帧并去重，最多保留信息量最大的 15 帧，无需手动截屏' },
+  { icon: 'mic', text: '智能问答输入框支持语音提问与附件上传（图片 / PPT / 文档）；Enter 发送、Shift+Enter 换行' },
+  { icon: 'refresh', text: '视频材料会自动抽帧并去重，只保留信息量最大的关键帧，无需手动截屏或调参' },
+  { icon: 'edit', text: '练习中做错的题会自动收进错题本，点开错题卡片可回看完整题目与解析，按章节重练巩固薄弱点' },
 ]
 
 const faqs = ref<{ q: string; a: string; open: boolean }[]>([
@@ -46,7 +48,7 @@ const faqs = ref<{ q: string; a: string; open: boolean }[]>([
   },
   {
     q: '一节课的纪要包含哪些内容？',
-    a: '六个固定板块：课程主题、核心知识点、重要定义与公式、教师强调重点、学生提问与解答、课后作业 / 待办。可在「个人设置 → 纪要生成」中调整详细程度与是否包含学生问答。',
+    a: '按「课程主题、核心知识点、重要定义与公式、重点问题」等板块生成；课堂中没有的内容会自动省略。处理参数由系统统一按最佳配置运行，无需手动调整。',
     open: false,
   },
   {
@@ -87,7 +89,7 @@ function toggle(i: number) {
     </section>
 
     <!-- 板块导览 -->
-    <h2 class="h3 sec-title">六大板块导览</h2>
+    <h2 class="h3 sec-title">七大板块导览</h2>
     <div class="board-grid">
       <div v-for="b in boards" :key="b.name" class="board-card" :class="b.tint">
         <div class="board-icon"><AppIcon :name="b.icon" :size="18" /></div>
@@ -97,7 +99,7 @@ function toggle(i: number) {
     </div>
 
     <!-- 对话技巧 -->
-    <h2 class="h3 sec-title">让纪要更好用的 4 个技巧</h2>
+    <h2 class="h3 sec-title">让纪要更好用的 5 个技巧</h2>
     <div class="card tips-card">
       <div v-for="t in tips" :key="t.text" class="tip-row">
         <span class="tip-ico"><AppIcon :name="t.icon" :size="15" /></span>

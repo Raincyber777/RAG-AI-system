@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 全局布局：左侧导航栏 + 右侧内容区
- * 导航项：课堂纪要 / 课堂追问 / 我的纪要 / 数据看板 / 设置 / 反馈
+ * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 数据看板 / 设置 / 反馈
  */
 import { useRouter, useRoute } from 'vue-router'
 import { ref } from 'vue'
@@ -14,8 +14,9 @@ const sidebarOpen = ref(false)
 
 const navs = [
   { path: '/studio', icon: 'spark', label: '课堂纪要' },
-  { path: '/qa', icon: 'chat', label: '课堂追问' },
+  { path: '/qa', icon: 'chat', label: '智能问答' },
   { path: '/notes', icon: 'book', label: '我的纪要' },
+  { path: '/quiz', icon: 'edit', label: '自创题练习' },
   { path: '/dashboard', icon: 'chart', label: '数据看板' },
   { path: '/settings', icon: 'sliders', label: '个人设置' },
   { path: '/feedback', icon: 'flag', label: '问题反馈' },

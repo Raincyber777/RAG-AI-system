@@ -26,21 +26,8 @@ export function buildNoteMarkdown(note: ClassNote): string {
     lines.push('')
   }
   if (note.emphasized.length) {
-    lines.push('## 教师强调重点')
+    lines.push('## 重点问题')
     for (const e of note.emphasized) lines.push(`- ⭐ ${e}`)
-    lines.push('')
-  }
-  if (note.qa.length) {
-    lines.push('## 学生提问与解答')
-    for (const q of note.qa) {
-      lines.push(`- **Q：${q.q}**`)
-      lines.push(`  A：${q.a}`)
-    }
-    lines.push('')
-  }
-  if (note.todos.length) {
-    lines.push('## 课后作业 / 待办')
-    for (const t of note.todos) lines.push(`- [ ] ${t}`)
     lines.push('')
   }
   lines.push('---')

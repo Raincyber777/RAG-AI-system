@@ -1,7 +1,8 @@
 /**
  * 模拟数据：智学纪要 — 多模态课堂知识助手（前端演示用，后续替换为真实后端接口）
- * 统一管理：课堂纪要 / 追问会话 / 引用来源 / 用户 / 反馈
+ * 统一管理：课堂纪要 / 追问会话 / 引用来源 / 用户
  */
+import type { UploadKind } from '@/utils/uploadFormats'
 
 // ---------- 课堂纪要 ----------
 export interface KeyPoint {
@@ -13,11 +14,6 @@ export interface Definition {
   term: string
   detail: string
   cite?: string
-}
-
-export interface NoteQA {
-  q: string
-  a: string
 }
 
 export interface ClassNote {
@@ -33,9 +29,7 @@ export interface ClassNote {
   theme: string // 课程主题概述
   points: KeyPoint[] // 核心知识点
   definitions: Definition[] // 重要定义与公式
-  emphasized: string[] // 教师强调重点
-  qa: NoteQA[] // 学生提问与解答
-  todos: string[] // 课后作业 / 待办
+  emphasized: string[] // 重点问题
 }
 
 export const mockNotes: ClassNote[] = [
@@ -69,15 +63,6 @@ export const mockNotes: ClassNote[] = [
       '拉格朗日余项中 ξ 的存在性证明是去年真题，注意中值定理的条件',
       '公式不用背全表，记住 e^x、sin x、cos x、ln(1+x)、(1+x)^α 五个即可推导其余',
     ],
-    qa: [
-      { q: '展开到几阶才够？', a: '看分母：分母是 x³ 就至少展开到 3 阶，上下同阶时再高一阶保险。' },
-      { q: '佩亚诺余项能用来估计误差吗？', a: '不能定量估计，只能说明“是更高阶的无穷小”；要估算误差请用拉格朗日余项。' },
-    ],
-    todos: [
-      '完成教材 P214 习题 4-3：第 1、3、7 题',
-      '推导 cos x 的麦克劳林展开并记忆',
-      '预习下一讲：傅里叶级数（PPT 已上传课程群）',
-    ],
   },
   {
     id: 'n2',
@@ -106,10 +91,6 @@ export const mockNotes: ClassNote[] = [
       '生产者-消费者问题的 PV 操作写法期末必考，注意信号量顺序防死锁',
       '“进程是资源分配单位、线程是调度单位”这句话选择题年年考',
     ],
-    qa: [
-      { q: '一个进程一定比线程占更多内存吗？', a: '不一定，线程共享进程的地址空间，但每个线程有独立的栈和寄存器现场。' },
-    ],
-    todos: ['完成 PV 操作两道课后题（生产者消费者 / 读者写者）', '阅读教材 2.3 节，整理进程状态转换图'],
   },
   {
     id: 'n3',
@@ -133,8 +114,6 @@ export const mockNotes: ClassNote[] = [
       { term: '完全二叉树', detail: '除最后一层外每层满，最后一层节点靠左排列', cite: 'PPT 第2页' },
     ],
     emphasized: ['由两种遍历序列重建二叉树的操作题每周实验必考'],
-    qa: [],
-    todos: ['完成实验三：实现二叉树的四种遍历（要求非递归版本）'],
   },
   {
     id: 'n4',
@@ -150,8 +129,6 @@ export const mockNotes: ClassNote[] = [
     points: [],
     definitions: [],
     emphasized: [],
-    qa: [],
-    todos: [],
   },
 ]
 
@@ -171,11 +148,21 @@ export interface Citation {
   score: number
 }
 
+/** 智能问答消息附件（前端演示：随消息展示名称 / 类型 / 本地预览） */
+export interface ChatAttachment {
+  id: string
+  name: string
+  kind: UploadKind
+  size: string
+  preview?: string // 图片附件的本地预览地址（objectURL）
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
   citations?: Citation[]
+  attachments?: ChatAttachment[]
   liked?: boolean
   disliked?: boolean
   time: string
@@ -230,22 +217,3 @@ export const currentUser = {
   email: 'linxz@zhiyuan.ai',
   color: '#5645d4',
 }
-
-// ---------- 反馈（不区分类型，回访统一走注册邮箱） ----------
-export interface FeedbackItem {
-  id: string
-  title: string
-  desc: string
-  status: 'pending' | 'resolved'
-  time: string
-}
-
-export const feedbackStatusText: Record<FeedbackItem['status'], string> = {
-  pending: '待处理',
-  resolved: '已解决',
-}
-
-export const myFeedbacks: FeedbackItem[] = [
-  { id: 'f1', title: '视频关键帧抽帧失败', desc: '上传超过 50MB 的 mp4 后，浏览器端 ffmpeg 抽帧卡死，希望增加提示或压缩。', status: 'pending', time: '2026-10-11 16:20' },
-  { id: 'f2', title: '纪要导出希望保留时间戳链接', desc: '导出 Markdown 时希望能保留录音时间戳，方便复习时回听。', status: 'resolved', time: '2026-10-09 10:05' },
-]
