@@ -27,7 +27,7 @@ export function buildNoteMarkdown(note: ClassNote): string {
   }
   if (note.emphasized.length) {
     lines.push('## 重点问题')
-    for (const e of note.emphasized) lines.push(`- ⭐ ${e}`)
+    for (const e of note.emphasized) lines.push(`- ${e}`)
     lines.push('')
   }
   lines.push('---')

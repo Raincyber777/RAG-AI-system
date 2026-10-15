@@ -6,13 +6,14 @@
  * 登录 / 注册为导航按钮，点击打开共用登录弹窗（AuthModal，状态在 store/auth）
  */
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AuthModal from '@/components/AuthModal.vue'
 import { openAuth, guestLogin } from '@/store/auth'
 import heroImg from '@/assets/landing-students.png'
 
 const router = useRouter()
+const route = useRoute()
 
 /* ---------- 顶部导航：平滑滚动 + 滚动高亮 ---------- */
 const navSecs = [
@@ -35,6 +36,8 @@ function onWinScroll() {
 
 let spy: IntersectionObserver | null = null
 onMounted(() => {
+  // 管理端未登录跳回时携带 ?login=1：着陆后自动打开登录弹窗
+  if (route.query.login === '1') openAuth('login')
   window.addEventListener('scroll', onWinScroll, { passive: true })
   onWinScroll()
   spy = new IntersectionObserver(

@@ -7,7 +7,11 @@
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
-import { authModalOpen, authModalMode, closeAuth, loginSuccess, guestLogin, type AuthMode } from '@/store/auth'
+import { userProfile } from '@/store/study'
+import {
+  authModalOpen, authModalMode, closeAuth, loginSuccess, guestLogin,
+  matchAdminAccount, role, ADMIN_ORIGIN, DEMO_ACCOUNTS, type AuthMode, type DemoLoginAccount,
+} from '@/store/auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,11 +40,34 @@ function switchMode(m: AuthMode) {
 function submit() {
   loading.value = true
   setTimeout(() => {
+    // 分权：管理员账号在用户端登录 → 先进入管理端（管理端通过 sso 参数免登）
+    if (authModalMode.value !== 'register') {
+      const id = loginType.value === 'email' ? email.value.trim() : phone.value.trim()
+      const admin = matchAdminAccount(id, password.value)
+      if (admin) {
+        loginSuccess({ name: admin.name })
+        role.value = admin.role
+        localStorage.setItem('zy_role', admin.role)
+        userProfile.name = admin.name
+        userProfile.email = admin.email
+        loading.value = false
+        window.location.href =
+          `${ADMIN_ORIGIN}/?sso=1&n=${encodeURIComponent(admin.name)}&e=${encodeURIComponent(admin.email)}&r=${admin.role}`
+        return
+      }
+    }
     loginSuccess({ register: authModalMode.value === 'register', name: username.value || '林小智' })
     loading.value = false
     // 在着陆页打开的弹窗：登录 / 注册后进入应用；应用内则原地恢复完整权限
     if (route.name === 'login') router.push('/studio')
   }, 600)
+}
+
+/** 演示账号一键填入：切换为邮箱登录并写入邮箱与密码 */
+function fillDemo(d: DemoLoginAccount) {
+  loginType.value = 'email'
+  email.value = d.email
+  password.value = d.password
 }
 
 function sendReset() {
@@ -130,6 +157,20 @@ onBeforeUnmount(() => {
               <span v-if="loading" class="spinner"></span>
               {{ loading ? '请稍候…' : '登 录' }}
             </button>
+
+            <!-- 演示账号：点击一键填入（管理员 / 超级管理员登录后先进入管理端） -->
+            <div class="demo-box">
+              <div class="demo-title">演示账号（点击一键填入）</div>
+              <button
+                v-for="d in DEMO_ACCOUNTS" :key="d.email"
+                type="button" class="demo-row"
+                @click="fillDemo(d)"
+              >
+                <span class="demo-role">{{ d.label }}</span>
+                <span class="demo-acc ellipsis">{{ d.email }}</span>
+                <span class="demo-pwd">{{ d.password }}</span>
+              </button>
+            </div>
           </form>
 
           <!-- 注册 -->
@@ -267,6 +308,22 @@ onBeforeUnmount(() => {
 .back-btn { margin-top: 4px; }
 .divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--stone); font-size: 12px; }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--hairline); }
+
+/* 演示账号（登录表单下方，点击一键填入） */
+.demo-box {
+  margin-top: 14px; padding: 10px 12px;
+  background: var(--surface-soft); border-radius: 10px;
+}
+.demo-title { font-size: 11.5px; font-weight: 600; color: var(--stone); margin-bottom: 4px; }
+.demo-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: none; background: transparent; font-family: inherit; text-align: left;
+  padding: 5px 6px; border-radius: 6px; cursor: pointer; transition: background 0.15s ease;
+}
+.demo-row:hover { background: var(--canvas); }
+.demo-role { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--primary); min-width: 58px; }
+.demo-acc { flex: 1; min-width: 0; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.demo-pwd { flex-shrink: 0; font-size: 11.5px; color: var(--stone); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .form-fade-enter-active, .form-fade-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
 .form-fade-enter-from, .form-fade-leave-to { opacity: 0; transform: translateY(6px); }
 </style>

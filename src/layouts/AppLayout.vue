@@ -10,14 +10,14 @@ import { ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AuthModal from '@/components/AuthModal.vue'
 import { userProfile } from '@/store/study'
-import { isGuest, logout as authLogout, openAuth } from '@/store/auth'
+import { isGuest, role, logout as authLogout, openAuth } from '@/store/auth'
 
 const router = useRouter()
 const route = useRoute()
 const sidebarOpen = ref(false)
 
 const navs = [
-  { path: '/studio', icon: 'spark', label: '课堂纪要' },
+  { path: '/studio', icon: 'file', label: '课堂纪要' },
   { path: '/qa', icon: 'chat', label: '智能问答' },
   { path: '/notes', icon: 'book', label: '我的纪要' },
   { path: '/quiz', icon: 'edit', label: '自创题练习' },
@@ -136,7 +136,10 @@ function guestDrop(e: DragEvent) {
           <div v-else-if="isGuest" class="avatar avatar-guest"><AppIcon name="user" :size="17" /></div>
           <div v-else class="avatar" :style="{ background: userProfile.color }">{{ userProfile.name[0] }}</div>
           <div class="flex-1 ellipsis">
-            <div class="user-name">{{ isGuest ? '游客' : userProfile.name }}</div>
+            <div class="user-name">
+              {{ isGuest ? '游客' : userProfile.name }}
+              <span v-if="!isGuest && role !== 'user'" class="tag tag-purple role-tag">管理员</span>
+            </div>
             <div class="user-mail ellipsis">{{ isGuest ? '未登录 · 仅可浏览' : userProfile.email }}</div>
           </div>
           <button class="icon-btn" title="退出登录" aria-label="退出登录" @click.stop="showLogoutConfirm = true"><AppIcon name="logout" :size="16" /></button>
@@ -212,6 +215,8 @@ function guestDrop(e: DragEvent) {
 /* 游客态头像：灰色人形占位 */
 .avatar-guest { background: var(--surface); color: var(--stone); }
 .user-name { font-size: 13px; font-weight: 600; }
+/* 管理员身份小标签（管理员账号在用户端同样可用） */
+.role-tag { font-size: 10px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px; }
 .user-mail { font-size: 11px; color: var(--stone); }
 .icon-btn {
   border: none; background: transparent; color: var(--stone);

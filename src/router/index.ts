@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { userProfile } from '@/store/study'
 
 /**
  * 用户端路由表 — 智学纪要 · 多模态课堂知识助手
@@ -77,6 +78,19 @@ const router = createRouter({
 
 // 简易登录守卫：无 token 时跳转登录页
 router.beforeEach((to) => {
+  // 管理端「进入用户端」携带 sso：无登录态时按管理员身份接入（演示 SSO），并去除参数重入
+  if (to.query.sso === '1' && !localStorage.getItem('zy_token')) {
+    localStorage.setItem('zy_token', 'demo-token')
+    localStorage.setItem('zy_role', 'admin')
+    const n = to.query.n
+    const e = to.query.e
+    if (typeof n === 'string' && n) {
+      localStorage.setItem('zy_user', n)
+      userProfile.name = n
+    }
+    if (typeof e === 'string' && e) userProfile.email = e
+    return { path: to.path, replace: true }
+  }
   const token = localStorage.getItem('zy_token')
   if (!token && to.name !== 'login') return { name: 'login' }
   if (token && to.name === 'login') return { name: 'studio' }
