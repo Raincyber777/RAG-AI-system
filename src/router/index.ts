@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 /**
  * 用户端路由表 — 智学纪要 · 多模态课堂知识助手
- * /login     登录注册页（无需鉴权）
+ * /login     着陆页（顶部导航 + 登录 / 注册弹窗，无需鉴权）
  * /studio    课堂纪要工作台（核心：上传 → Agent 处理 → 流式纪要）
  * /qa        智能问答（带时间戳 / 图片来源的 RAG 问答）
  * /notes     我的纪要（课堂卡片管理与导出）

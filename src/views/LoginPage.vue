@@ -1,520 +1,430 @@
 <script setup lang="ts">
 /**
- * 登录 / 注册 / 找回密码页
- * 左侧：深蓝品牌区（动态极光光晕 + 网格 + 漂浮便签圆点）
- * 右侧：浅色表单区（动态粉彩光斑背景）
- * 所有动画仅使用 transform / opacity，保证流畅并遵循 prefers-reduced-motion
+ * 着陆页（用户看到的第一页）· appily 风格
+ * 顶部导航栏 + 大字 Hero + 撞色几何装饰 + 简约板块
+ * 导航点击平滑滚动到对应板块（滚动时高亮当前板块）
+ * 登录 / 注册为导航按钮，点击打开共用登录弹窗（AuthModal，状态在 store/auth）
  */
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import AuthModal from '@/components/AuthModal.vue'
+import { openAuth, guestLogin } from '@/store/auth'
+import heroImg from '@/assets/landing-students.png'
 
 const router = useRouter()
-type Mode = 'login' | 'register' | 'forgot'
-const mode = ref<Mode>('login')
 
-// 登录方式：邮箱 / 手机号
-type LoginType = 'email' | 'phone'
-const loginType = ref<LoginType>('email')
+/* ---------- 顶部导航：平滑滚动 + 滚动高亮 ---------- */
+const navSecs = [
+  { id: 'features', label: '产品功能' },
+  { id: 'how', label: '使用流程' },
+  { id: 'faq', label: '常见问题' },
+]
+const activeSec = ref('')
+const navScrolled = ref(false)
 
-const username = ref('')
-const phone = ref('')
-const email = ref('')
-const password = ref('')
-const agree = ref(false)
-const loading = ref(false)
-
-// 找回密码（演示流程，支持手机号或邮箱）
-const forgotAccount = ref('')
-const forgotSent = ref(false)
-const forgotSending = ref(false)
-
-function switchMode(m: Mode) {
-  mode.value = m
-  forgotSent.value = false
+function scrollToSec(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+function onWinScroll() {
+  navScrolled.value = window.scrollY > 10
 }
 
-function submit() {
-  loading.value = true
-  setTimeout(() => {
-    localStorage.setItem('zy_token', 'demo-token')
-    if (mode.value === 'register') {
-      localStorage.setItem('zy_user', username.value || '林小智')
-    }
-    loading.value = false
-    router.push('/chat')
-  }, 600)
+let spy: IntersectionObserver | null = null
+onMounted(() => {
+  window.addEventListener('scroll', onWinScroll, { passive: true })
+  onWinScroll()
+  spy = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) if (e.isIntersecting) activeSec.value = e.target.id
+    },
+    { rootMargin: '-40% 0px -55% 0px' },
+  )
+  document.querySelectorAll('.landing section[id]').forEach((s) => spy?.observe(s))
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', onWinScroll)
+  spy?.disconnect()
+})
+
+/* ---------- 游客一键体验：进入应用（仅可浏览，功能操作会弹出登录） ---------- */
+function startGuest() {
+  guestLogin()
+  router.push('/studio')
 }
 
-function sendReset() {
-  if (!forgotAccount.value || forgotSending.value) return
-  forgotSending.value = true
-  setTimeout(() => {
-    forgotSending.value = false
-    forgotSent.value = true
-  }, 800)
-}
-
-function guestLogin() {
-  localStorage.setItem('zy_token', 'demo-token')
-  router.push('/chat')
-}
-
-// 装饰便签圆点（Notion 风格，带漂浮动画参数）
-const dots = [
-  { top: '12%', left: '8%', c: '#ff64c8', s: 14, dur: '7s', delay: '0s' },
-  { top: '22%', left: '84%', c: '#f5d75e', s: 10, dur: '9s', delay: '0.6s' },
-  { top: '68%', left: '12%', c: '#2a9d99', s: 12, dur: '8s', delay: '1.2s' },
-  { top: '78%', left: '76%', c: '#5645d4', s: 16, dur: '10s', delay: '0.3s' },
-  { top: '40%', left: '92%', c: '#dd5b00', s: 9, dur: '7.5s', delay: '1.8s' },
-  { top: '8%', left: '58%', c: '#1aae39', s: 8, dur: '9.5s', delay: '0.9s' },
+/* ---------- 产品功能 ---------- */
+const features = [
+  { icon: 'upload', tint: 'fi-lavender', title: '多模态材料上传', desc: '录音、板书照片、课堂视频、讲义文档统一拖进上传区，支持格式自动识别' },
+  { icon: 'layers', tint: 'fi-sky', title: 'Agent 可视化流水线', desc: '抽帧、转写、图片理解、融合生成、向量入库，每一步进度实时可见' },
+  { icon: 'link', tint: 'fi-mint', title: '全程可溯源', desc: '每个结论都带录音时间戳或图片页码，点开即可核对录音与板书原文' },
+  { icon: 'edit', tint: 'fi-peach', title: '追问与练习', desc: '基于纪要多轮追问、自动出题练习，错题自动进入错题本按章节重练' },
 ]
 
-// 右侧漂浮几何装饰（Notion 便签风：便签方块 / 圆环 / 加号 / 圆点）
-const shapes = [
-  { kind: 'note', top: '9%', left: '7%', s: 54, c: '#f5d75e', r: -12, dur: '9s', delay: '0s' },
-  { kind: 'ring', top: '21%', left: '87%', s: 38, c: '#5645d4', r: 0, dur: '11s', delay: '0.5s' },
-  { kind: 'plus', top: '57%', left: '9%', s: 30, c: '#2a9d99', r: 0, dur: '10s', delay: '1.2s' },
-  { kind: 'dot', top: '73%', left: '85%', s: 18, c: '#ff64c8', r: 0, dur: '8.5s', delay: '0.8s' },
-  { kind: 'note', top: '85%', left: '15%', s: 40, c: '#dcecfa', r: 10, dur: '12s', delay: '0.3s' },
-  { kind: 'ring', top: '6%', left: '60%', s: 26, c: '#dd5b00', r: 0, dur: '9.5s', delay: '1.6s' },
-  { kind: 'dot', top: '37%', left: '4%', s: 12, c: '#1aae39', r: 0, dur: '7.5s', delay: '0.2s' },
-  { kind: 'plus', top: '91%', left: '58%', s: 24, c: '#a02e6d', r: 0, dur: '10.5s', delay: '1s' },
+/* ---------- 使用流程 ---------- */
+const steps = [
+  { title: '上传课堂材料', desc: '把课堂录音、板书照片或短视频拖进工作台，选好所属课程与课堂主题' },
+  { title: 'Agent 自动处理', desc: '提取音频 → 抽取关键帧 → 图片理解 → 语音转写 → 融合生成 → 向量入库，全程可视化' },
+  { title: '纪要 · 追问 · 练习', desc: '流式生成结构化课堂纪要并随时导出；继续追问，或一键生成练习题巩固' },
 ]
 
-// 漂浮光球
-const orbs = [
-  { top: '30%', left: '24%', c: 'rgba(255,100,200,0.75)', s: 10, dur: '11s', delay: '0s', dx: 46, dy: -58 },
-  { top: '56%', left: '64%', c: 'rgba(86,69,212,0.8)', s: 12, dur: '13s', delay: '1s', dx: -52, dy: 44 },
-  { top: '24%', left: '70%', c: 'rgba(42,157,153,0.7)', s: 8, dur: '9s', delay: '0.5s', dx: 38, dy: 52 },
-  { top: '76%', left: '40%', c: 'rgba(245,215,94,0.65)', s: 9, dur: '12s', delay: '1.6s', dx: -40, dy: -48 },
-]
+/* ---------- 常见问题 ---------- */
+const faqs = ref([
+  {
+    q: '纪要里的「录音 03:24」是怎么来的？',
+    a: '语音转写模型会为每句话打上时间戳，纪要生成时把结论与其出处对齐，因此每个知识点都能定位到录音的精确时间点，点开角标即可核对原文。',
+    open: false,
+  },
+  {
+    q: '视频太大，浏览器会卡吗？',
+    a: '视频在浏览器端抽帧，只把关键帧和音轨送往后端，传输量远小于原视频。建议单个视频不超过 20 分钟；过长可先剪辑或只上传录音。',
+    open: false,
+  },
+  {
+    q: '我的课堂数据安全吗？',
+    a: '录音、图片与纪要仅存储在你的课堂知识库中，不会参与任何模型训练；只有你本人能看到自己的课堂内容，可随时删除。',
+    open: false,
+  },
+])
+function toggleFaq(i: number) {
+  const f = faqs.value[i]
+  if (f) f.open = !f.open
+}
 </script>
 
 <template>
-  <div class="page">
-    <!-- ============ 左侧品牌区 ============ -->
-    <section class="hero">
-      <!-- 动态背景：极光光晕 -->
-      <div class="bg-aurora" aria-hidden="true"></div>
-      <!-- 动态背景：缓慢平移的网格 -->
-      <div class="bg-grid" aria-hidden="true"></div>
-      <!-- 动态背景：漂浮光球 -->
-      <span
-        v-for="(o, i) in orbs"
-        :key="'orb' + i"
-        class="orb"
-        :style="{
-          top: o.top, left: o.left, background: o.c,
-          width: o.s + 'px', height: o.s + 'px',
-          animationDuration: o.dur, animationDelay: o.delay,
-          '--dx': o.dx + 'px', '--dy': o.dy + 'px',
-        }"
-        aria-hidden="true"
-      />
-      <!-- 便签圆点 -->
-      <span
-        v-for="(d, i) in dots"
-        :key="'dot' + i"
-        class="dot-deco"
-        :style="{
-          top: d.top, left: d.left, background: d.c,
-          width: d.s + 'px', height: d.s + 'px',
-          animationDuration: d.dur, animationDelay: d.delay,
-        }"
-        aria-hidden="true"
-      />
+  <div class="landing">
+    <!-- ============ 顶部导航栏 ============ -->
+    <header class="nav" :class="{ scrolled: navScrolled }">
+      <div class="nav-inner">
+        <a class="brand" href="#" aria-label="智学纪要 · 回到顶部" @click.prevent="scrollToTop">
+          <svg class="brand-mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#zx-lg)" />
+            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
+            <defs>
+              <linearGradient id="zx-lg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6d5ae0" /><stop offset="1" stop-color="#4534b3" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <span class="brand-name">智学纪要</span>
+        </a>
 
-      <div class="hero-body">
-        <!-- 品牌：耳机 logo + 系统名 -->
-        <div class="hero-brand">
-          <div class="hero-logo"><AppIcon name="headphones" :size="26" /></div>
-          <span class="hero-brand-name">智学纪要</span>
-        </div>
+        <nav class="nav-links" aria-label="页面导航">
+          <button
+            v-for="s in navSecs"
+            :key="s.id"
+            class="nav-link"
+            :class="{ active: activeSec === s.id }"
+            @click="scrollToSec(s.id)"
+          >{{ s.label }}</button>
+        </nav>
 
-        <h1 class="hero-title">录一堂课，得一份<br />可追问的笔记</h1>
-        <p class="hero-sub">
-          多模态课堂知识助手：上传课堂录音、板书照片或短视频，<br />
-          自动转写、抽取关键帧、生成结构化课堂纪要，随时溯源追问。
-        </p>
-        <div class="hero-features">
-          <div class="feature-chip tint-yellow-bold"><AppIcon name="headphones" :size="14" /> 语音转写</div>
-          <div class="feature-chip tint-mint"><AppIcon name="image" :size="14" /> 关键帧理解</div>
-          <div class="feature-chip tint-sky"><AppIcon name="chat" :size="14" /> 追问溯源</div>
+        <div class="nav-actions">
+          <button class="pill pill-ghost" @click="openAuth('login')">登录</button>
+          <button class="pill pill-primary" @click="openAuth('register')">免费注册</button>
         </div>
       </div>
-    </section>
+    </header>
 
-    <!-- ============ 右侧表单区 ============ -->
-    <section class="form-side">
-      <!-- 动态背景：旋转的粉彩流动渐变 -->
-      <div class="bg-flow" aria-hidden="true"></div>
-      <!-- 动态背景：纸面点阵纹理 -->
-      <div class="bg-dots" aria-hidden="true"></div>
-      <!-- 动态背景：漂浮几何图形 -->
-      <span
-        v-for="(sh, i) in shapes"
-        :key="'shape' + i"
-        class="shape"
-        :class="'shape-' + sh.kind"
-        :style="{
-          top: sh.top, left: sh.left, color: sh.c,
-          width: sh.s + 'px', height: sh.s + 'px',
-          '--rot': sh.r + 'deg',
-          animationDuration: sh.dur, animationDelay: sh.delay,
-        }"
-        aria-hidden="true"
-      />
+    <main>
+      <!-- ============ Hero ============ -->
+      <section id="hero" class="hero">
+        <!-- 浅色几何底纹 -->
+        <span class="hero-deco d1" aria-hidden="true"></span>
+        <span class="hero-deco d2" aria-hidden="true"></span>
+        <span class="hero-deco d3" aria-hidden="true"></span>
+        <span class="hero-deco d4" aria-hidden="true"></span>
 
-      <div class="form-card card-lg">
-        <div class="seg-tabs mb-md">
-          <button
-            class="seg-tab"
-            :class="{ active: mode === 'login' }"
-            @click="switchMode('login')"
-          >登录</button>
-          <button
-            class="seg-tab"
-            :class="{ active: mode === 'register' }"
-            @click="switchMode('register')"
-          >注册</button>
-        </div>
-
-        <Transition name="form-fade" mode="out-in">
-          <!-- 登录 -->
-          <form v-if="mode === 'login'" key="login" @submit.prevent="submit">
-            <div class="type-tabs" role="tablist" aria-label="登录方式">
-              <button
-                type="button"
-                class="type-tab"
-                :class="{ active: loginType === 'email' }"
-                @click="loginType = 'email'"
-              >邮箱登录</button>
-              <button
-                type="button"
-                class="type-tab"
-                :class="{ active: loginType === 'phone' }"
-                @click="loginType = 'phone'"
-              >手机号登录</button>
-            </div>
-
-            <div v-if="loginType === 'email'" class="field">
-              <label class="field-label" for="login-email">邮箱</label>
-              <input id="login-email" v-model="email" class="input" type="email" placeholder="you@example.com" required />
-            </div>
-            <div v-else class="field">
-              <label class="field-label" for="login-phone">手机号</label>
-              <input id="login-phone" v-model="phone" class="input" type="tel" inputmode="numeric" placeholder="请输入 11 位手机号" required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号" />
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="login-pwd">密码</label>
-              <input id="login-pwd" v-model="password" class="input" type="password" placeholder="请输入密码" required minlength="6" />
-            </div>
-
-            <div class="aux-row">
-              <button type="button" class="forgot-link" @click="switchMode('forgot')">忘记密码？</button>
-            </div>
-
-            <button class="btn btn-primary btn-block btn-lg" type="submit" :disabled="loading">
-              <span v-if="loading" class="spinner"></span>
-              {{ loading ? '请稍候…' : '登 录' }}
-            </button>
-          </form>
-
-          <!-- 注册 -->
-          <form v-else-if="mode === 'register'" key="register" @submit.prevent="submit">
-            <div class="field">
-              <label class="field-label" for="reg-username">用户名</label>
-              <input id="reg-username" v-model="username" class="input" placeholder="2-20 位字符" required minlength="2" maxlength="20" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="reg-phone">手机号</label>
-              <input id="reg-phone" v-model="phone" class="input" type="tel" inputmode="numeric" placeholder="11 位手机号" required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="reg-email">邮箱</label>
-              <input id="reg-email" v-model="email" class="input" type="email" placeholder="you@example.com" required />
-            </div>
-            <div class="field">
-              <label class="field-label" for="reg-pwd">密码</label>
-              <input id="reg-pwd" v-model="password" class="input" type="password" placeholder="至少 6 位密码" required minlength="6" />
-            </div>
-            <label class="agree-row">
-              <input v-model="agree" type="checkbox" />
-              <span>我已阅读并同意<a href="#" @click.stop.prevent>《用户协议》</a>与<a href="#" @click.stop.prevent>《隐私政策》</a></span>
-            </label>
-            <button class="btn btn-primary btn-block btn-lg" type="submit" :disabled="loading || !agree">
-              <span v-if="loading" class="spinner"></span>
-              {{ loading ? '请稍候…' : agree ? '注 册 并 登 录' : '请先勾选协议' }}
-            </button>
-          </form>
-
-          <!-- 找回密码 -->
-          <form v-else key="forgot" @submit.prevent="sendReset">
-            <div class="forgot-tip">
-              <AppIcon name="lock" :size="15" />
-              输入注册时的手机号或邮箱，我们将向你发送重置链接
-            </div>
-
-            <template v-if="!forgotSent">
-              <div class="field">
-                <label class="field-label" for="forgot-account">手机号 / 邮箱</label>
-                <input id="forgot-account" v-model="forgotAccount" class="input" placeholder="13800138000 或 you@example.com" required />
-              </div>
-              <button class="btn btn-primary btn-block btn-lg" type="submit" :disabled="forgotSending">
-                <span v-if="forgotSending" class="spinner"></span>
-                {{ forgotSending ? '发送中…' : '发送重置邮件' }}
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <span class="eyebrow"><AppIcon name="spark" :size="13" /> 多模态课堂知识助手</span>
+            <h1 class="h1">录一堂课，<br />得一份<em>可追问</em>的笔记。</h1>
+            <p class="hero-sub">
+              上传课堂录音、板书照片或短视频，AI 自动生成结构化课堂纪要——
+              每个结论都能溯源到录音时间戳与 PPT 页码，随时追问、一键出题练习。
+            </p>
+            <div class="cta-row">
+              <button class="btn btn-primary cta" @click="openAuth('register')">免费开始使用</button>
+              <button class="cta-ghost" @click="scrollToSec('how')">
+                了解使用流程 <AppIcon name="download" :size="14" />
               </button>
-            </template>
-
-            <div v-else class="sent-box">
-              <AppIcon name="check" :size="18" />
-              <div>
-                <div class="sent-title">重置链接已发送</div>
-                <div class="text-caption">请前往 {{ forgotAccount }} 查收（演示环境不会真实发信）</div>
-              </div>
             </div>
+            <p class="hero-note">浏览器直接使用 · 演示环境可一键体验 · 无需安装</p>
+          </div>
 
-            <button type="button" class="btn btn-secondary btn-block back-btn" @click="switchMode('login')">
-              <AppIcon name="arrow-left" :size="14" /> 返回登录
-            </button>
-          </form>
-        </Transition>
+          <div class="hero-visual">
+            <span class="shape shape-teal" aria-hidden="true"></span>
+            <span class="shape shape-yellow" aria-hidden="true"></span>
+            <img :src="heroImg" class="hero-photo" alt="学生们在图书馆一起讨论课堂内容" />
+            <span class="shape shape-purple" aria-hidden="true"></span>
+          </div>
+        </div>
+      </section>
 
-        <template v-if="mode !== 'forgot'">
-          <div class="divider"><span>或</span></div>
-          <button class="btn btn-secondary btn-block" @click="guestLogin">
-            <AppIcon name="zap" :size="16" /> 游客一键体验
-          </button>
-        </template>
+      <!-- ============ 产品功能 ============ -->
+      <section id="features" class="sec">
+        <span class="sec-deco deco-a" aria-hidden="true"></span>
+        <div class="sec-inner">
+          <div class="sec-head">
+            <h2>一个工作台，装下整堂课</h2>
+            <p>从材料上传到练习巩固，学习闭环的每一步都在这里</p>
+          </div>
+          <div class="feat-grid">
+            <div v-for="f in features" :key="f.title" class="feat-card">
+              <span class="feat-ico" :class="f.tint"><AppIcon :name="f.icon" :size="18" /></span>
+              <div class="feat-title">{{ f.title }}</div>
+              <p class="feat-desc">{{ f.desc }}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 使用流程 ============ -->
+      <section id="how" class="sec">
+        <span class="sec-deco deco-b" aria-hidden="true"></span>
+        <div class="sec-inner">
+          <div class="sec-head">
+            <h2>三步，把课堂变成知识库</h2>
+            <p>Agent 按材料类型自动编排处理步骤，你只需要上传</p>
+          </div>
+          <div class="steps-row">
+            <div v-for="(s, i) in steps" :key="s.title" class="step-card">
+              <div class="step-num">{{ i + 1 }}</div>
+              <div class="step-title">{{ s.title }}</div>
+              <p class="step-desc">{{ s.desc }}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 常见问题 ============ -->
+      <section id="faq" class="sec">
+        <span class="sec-deco deco-c" aria-hidden="true"></span>
+        <div class="sec-inner sec-inner-narrow">
+          <div class="sec-head">
+            <h2>常见问题</h2>
+            <p>关于课堂纪要与数据安全的三个高频问题</p>
+          </div>
+          <div class="faq-list">
+            <div v-for="(f, i) in faqs" :key="f.q" class="faq-item">
+              <button class="faq-q" :class="{ open: f.open }" @click="toggleFaq(i)">
+                <span class="faq-ico"><AppIcon name="plus" :size="15" /></span>
+                <span>{{ f.q }}</span>
+              </button>
+              <p v-if="f.open" class="faq-a">{{ f.a }}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 底部 CTA ============ -->
+      <section class="cta-band-wrap">
+        <div class="cta-band">
+          <h2>把下一堂课，变成可追问的知识库</h2>
+          <p>免费注册，几分钟内生成你的第一份课堂纪要</p>
+          <button class="btn btn-primary cta" @click="openAuth('register')">免费注册</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============ 页脚 ============ -->
+    <footer class="foot">
+      <div class="foot-inner">
+        <div class="foot-brand">
+          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="9" fill="#5645d4" />
+            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
+          </svg>
+          智学纪要
+        </div>
+        <span class="foot-cap">© 2026 智学纪要 · 多模态课堂知识助手</span>
       </div>
-    </section>
+    </footer>
+
+    <!-- 登录 / 注册弹窗（共用组件，状态在 store/auth） -->
+    <AuthModal />
   </div>
 </template>
 
 <style scoped>
-.page { display: flex; height: 100%; }
+.landing { min-height: 100%; background: var(--canvas); color: var(--ink); }
 
-/* ============ 左侧品牌区 ============ */
-.hero {
-  flex: 1.2; background: var(--brand-navy); color: var(--on-dark);
-  position: relative; overflow: hidden;
-  display: flex; align-items: center; justify-content: center;
+/* ============ 顶部导航栏 ============ */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  background: rgba(255, 255, 255, 0.84); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+.nav.scrolled { border-bottom-color: var(--hairline); box-shadow: 0 4px 24px rgba(10, 21, 48, 0.06); }
+.nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 32px; height: 68px; display: flex; align-items: center; gap: 28px; }
+.brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.brand-mark { display: block; }
+.brand-name { font-size: 19px; font-weight: 800; letter-spacing: -0.3px; color: var(--ink-deep); }
+.nav-links { display: flex; gap: 4px; }
+.nav-link {
+  border: none; background: transparent; font-family: inherit; cursor: pointer;
+  font-size: 14px; font-weight: 600; color: var(--slate);
+  padding: 8px 14px; border-radius: 9px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.nav-link:hover { color: var(--ink); background: var(--surface); }
+.nav-link.active { color: var(--primary); background: var(--tint-lavender); }
+.nav-actions { display: flex; gap: 10px; margin-left: auto; flex-shrink: 0; }
+.pill {
+  font-family: inherit; cursor: pointer; border-radius: var(--radius-full);
+  font-size: 14px; font-weight: 700; padding: 9px 20px;
+  transition: all 0.15s ease;
+}
+.pill-ghost { background: transparent; border: 1.5px solid var(--hairline-strong); color: var(--ink); }
+.pill-ghost:hover { border-color: var(--ink-deep); }
+.pill-primary { background: var(--primary); border: 1.5px solid var(--primary); color: #fff; }
+.pill-primary:hover { background: var(--primary-pressed); border-color: var(--primary-pressed); }
 
-/* 极光光晕：两个大光斑缓慢漂移 */
-.bg-aurora { position: absolute; inset: -18%; filter: blur(90px); pointer-events: none; }
-.bg-aurora::before {
-  content: ''; position: absolute; width: 58%; aspect-ratio: 1; border-radius: 50%;
-  background: radial-gradient(circle, rgba(86, 69, 212, 0.55), transparent 65%);
-  top: 2%; left: 8%;
-  animation: aurora-a 26s ease-in-out infinite alternate;
-}
-.bg-aurora::after {
-  content: ''; position: absolute; width: 52%; aspect-ratio: 1; border-radius: 50%;
-  background: radial-gradient(circle, rgba(42, 157, 153, 0.4), transparent 65%);
-  bottom: 0%; right: 6%;
-  animation: aurora-b 32s ease-in-out infinite alternate;
-}
-@keyframes aurora-a {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(20%, 14%) scale(1.28); }
-}
-@keyframes aurora-b {
-  from { transform: translate(0, 0) scale(1.15); }
-  to { transform: translate(-16%, -12%) scale(0.92); }
-}
-
-/* 网格：超尺寸图层做无缝平移 */
-.bg-grid { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.bg-grid::before {
-  content: ''; position: absolute; top: -100%; left: -50%; width: 200%; height: 300%;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
-  background-size: 44px 44px;
-  -webkit-mask-image: radial-gradient(ellipse at 42% 42%, #000 28%, transparent 74%);
-  mask-image: radial-gradient(ellipse at 42% 42%, #000 28%, transparent 74%);
-  animation: grid-pan 36s linear infinite;
-}
-@keyframes grid-pan { to { transform: translate(44px, 44px); } }
-
-/* 漂浮光球 */
-.orb {
-  position: absolute; border-radius: 50%; pointer-events: none;
-  mix-blend-mode: screen; opacity: 0.85;
-  animation-name: orb-float; animation-timing-function: ease-in-out;
-  animation-iteration-count: infinite; animation-direction: alternate;
-}
-@keyframes orb-float {
-  from { transform: translate(0, 0); }
-  to { transform: translate(var(--dx, 40px), var(--dy, -50px)); }
-}
-
-/* 便签圆点 */
-.dot-deco {
-  position: absolute; border-radius: 50%; opacity: 0.9; pointer-events: none;
-  animation-name: dot-float; animation-timing-function: ease-in-out;
-  animation-iteration-count: infinite; animation-direction: alternate;
-}
-@keyframes dot-float {
-  from { transform: translateY(0); }
-  to { transform: translateY(-16px); }
-}
-
-.hero-body { max-width: 480px; padding: 40px; position: relative; z-index: 1; }
-
-/* 品牌行 */
-.hero-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
-.hero-logo {
-  width: 52px; height: 52px; border-radius: 14px;
-  background: rgba(255, 255, 255, 0.1); color: var(--brand-yellow);
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  position: relative;
-}
-.hero-logo::after {
-  content: ''; position: absolute; inset: 0; border-radius: inherit;
-  box-shadow: 0 0 44px rgba(245, 215, 94, 0.5);
-  opacity: 0.15; animation: glow-pulse 4.5s ease-in-out infinite;
-}
-@keyframes glow-pulse { 0%, 100% { opacity: 0.12; } 50% { opacity: 0.65; } }
-.hero-brand-name { font-size: 36px; font-weight: 700; letter-spacing: -0.5px; }
-
-.hero-title { font-size: 48px; font-weight: 600; line-height: 1.1; letter-spacing: -1.5px; margin-bottom: 20px; }
-.hero-sub { font-size: 16px; line-height: 1.7; color: rgba(230, 228, 220, 0.85); margin-bottom: 32px; }
-.hero-features { display: flex; gap: 10px; flex-wrap: wrap; }
-.feature-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: var(--radius-md);
-}
-
-/* ============ 右侧表单区 ============ */
-.form-side {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 32px; background: var(--surface-soft);
-  position: relative; overflow: hidden;
-}
-/* 流动渐变：超大锥形渐变缓慢旋转，整片色彩持续流转 */
-.bg-flow {
-  position: absolute; inset: -60%;
-  background: conic-gradient(
-    from 180deg at 50% 50%,
-    #e9e3f7, #dbeafc, #ffe9d6, #e3f4df, #fbe3ef, #e9e3f7
-  );
-  filter: blur(50px); opacity: 0.85; pointer-events: none;
-  will-change: transform;
-  animation: flow-spin 44s linear infinite;
-}
-@keyframes flow-spin { to { transform: rotate(360deg); } }
-
-/* 纸面点阵纹理（静态，增加 Notion 纸质感） */
-.bg-dots {
-  position: absolute; inset: 0; pointer-events: none;
-  background-image: radial-gradient(circle, rgba(10, 21, 48, 0.07) 1.2px, transparent 1.2px);
-  background-size: 24px 24px;
-  -webkit-mask-image: radial-gradient(ellipse at 68% 32%, #000 22%, transparent 72%);
-  mask-image: radial-gradient(ellipse at 68% 32%, #000 22%, transparent 72%);
-}
-
-/* 漂浮几何图形：上下漂浮 + 轻微旋转（旋转基准由 --rot 提供） */
-.shape {
-  position: absolute; pointer-events: none; opacity: 0.6;
-  animation-name: shape-float; animation-timing-function: ease-in-out;
-  animation-iteration-count: infinite; animation-direction: alternate;
-  will-change: transform;
-}
-@keyframes shape-float {
-  from { transform: translateY(0) rotate(var(--rot, 0deg)); }
-  to { transform: translateY(-28px) rotate(calc(var(--rot, 0deg) + 9deg)); }
-}
-.shape-note { background: currentColor; border-radius: 7px; box-shadow: 0 6px 16px rgba(10, 21, 48, 0.1); }
-.shape-ring { border: 3.5px solid currentColor; border-radius: 50%; }
-.shape-dot { background: currentColor; border-radius: 50%; }
-.shape-plus::before, .shape-plus::after {
-  content: ''; position: absolute; background: currentColor; border-radius: 2px;
-}
-.shape-plus::before { left: 50%; top: 0; width: 24%; height: 100%; transform: translateX(-50%); }
-.shape-plus::after { top: 50%; left: 0; height: 24%; width: 100%; transform: translateY(-50%); }
-
-.form-card {
-  width: 420px; max-width: 100%; background: var(--canvas);
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  box-shadow:
-    0 24px 64px -16px rgba(10, 21, 48, 0.2),
-    0 6px 20px -6px rgba(10, 21, 48, 0.08);
+/* ============ Hero ============ */
+.hero { position: relative; padding: 158px 0 100px; overflow: hidden; }
+.hero-inner {
+  max-width: 1200px; margin: 0 auto; padding: 0 32px;
+  display: grid; grid-template-columns: 1.02fr 0.98fr; gap: 52px; align-items: center;
   position: relative; z-index: 1;
 }
-.form-card .input { border-radius: 12px; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--tint-lavender); color: var(--brand-purple-800);
+  font-size: 12.5px; font-weight: 700; padding: 6px 13px; border-radius: var(--radius-full);
+  margin-bottom: 20px;
+}
+.h1 { font-size: 46px; line-height: 1.18; font-weight: 800; letter-spacing: -1px; color: var(--ink-deep); margin-bottom: 18px; }
+.h1 em { font-style: normal; background: linear-gradient(transparent 64%, var(--tint-yellow-bold) 64%); padding: 0 2px; }
+.hero-sub { font-size: 15.5px; line-height: 1.85; color: var(--slate); max-width: 470px; margin-bottom: 30px; }
+.cta-row { display: flex; gap: 16px; align-items: center; }
+.cta { border-radius: 12px; padding: 14px 26px; font-size: 15px; font-weight: 700; }
+.cta-ghost {
+  border: none; background: transparent; font-family: inherit; cursor: pointer;
+  color: var(--ink); font-size: 14.5px; font-weight: 600;
+  display: inline-flex; gap: 6px; align-items: center; padding: 10px 4px;
+  transition: color 0.15s ease;
+}
+.cta-ghost:hover { color: var(--primary); }
+.cta-ghost svg { transform: rotate(180deg); }
+.hero-note { margin-top: 18px; font-size: 12.5px; color: var(--stone); }
 
-/* 表单切换过渡 */
-.form-fade-enter-active, .form-fade-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
-.form-fade-enter-from, .form-fade-leave-to { opacity: 0; transform: translateY(6px); }
+/* Hero 右侧视觉：照片 + 撞色几何 */
+.hero-visual { position: relative; }
+.hero-photo {
+  width: 100%; aspect-ratio: 10 / 9; object-fit: cover; display: block;
+  border-radius: 18px; box-shadow: var(--shadow-mockup); position: relative; z-index: 2;
+}
+.shape { position: absolute; pointer-events: none; }
+.shape-teal { top: -52px; right: -46px; width: 235px; height: 235px; background: var(--brand-teal); border-radius: 0 0 0 100%; z-index: 1; }
+.shape-yellow { bottom: -58px; left: -52px; width: 215px; height: 215px; background: var(--brand-yellow); border-radius: 100% 0 0 0; z-index: 3; }
+.shape-purple { top: -30px; right: -26px; width: 104px; height: 104px; background: var(--brand-purple); clip-path: polygon(0 0, 100% 0, 100% 100%); z-index: 3; }
 
-/* 登录方式切换（邮箱 / 手机号） */
-.type-tabs {
-  display: flex; gap: 6px; margin-bottom: 18px;
-  background: var(--surface-soft); padding: 4px; border-radius: 10px;
-}
-.type-tab {
-  flex: 1; border: none; background: transparent; font-family: inherit;
-  font-size: 13px; font-weight: 600; color: var(--slate);
-  padding: 8px 0; border-radius: 7px; cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.type-tab:hover { color: var(--ink); }
-.type-tab.active {
-  background: var(--canvas); color: var(--ink);
-  box-shadow: 0 1px 3px rgba(10, 21, 48, 0.1);
-}
+/* Hero 浅色底纹 */
+.hero-deco { position: absolute; pointer-events: none; opacity: 0.75; z-index: 0; }
+.d1 { top: 118px; left: -70px; width: 190px; height: 190px; background: var(--tint-mint); border-radius: 0 0 100% 0; }
+.d2 { top: 315px; left: 118px; width: 150px; height: 150px; background: var(--tint-sky); border-radius: 100% 0 0 0; }
+.d3 { bottom: 42px; left: 42%; width: 130px; height: 130px; background: var(--tint-yellow); border-radius: 0 100% 0 0; }
+.d4 { bottom: -46px; right: 5%; width: 165px; height: 165px; background: var(--tint-lavender); border-radius: 0 0 0 100%; }
 
-/* 忘记密码行：密码框下方右对齐 */
-.aux-row { display: flex; justify-content: flex-end; margin: -4px 0 14px; }
-.forgot-link {
-  border: none; background: transparent; padding: 0;
-  font-size: 12.5px; font-weight: 500; color: var(--link-blue); cursor: pointer;
-}
-.forgot-link:hover { text-decoration: underline; }
+/* ============ 通用板块 ============ */
+.sec { position: relative; padding: 90px 0; overflow: hidden; }
+.sec-inner { max-width: 1200px; margin: 0 auto; padding: 0 32px; position: relative; z-index: 1; }
+.sec-inner-narrow { max-width: 860px; }
+.sec-head { text-align: center; margin-bottom: 44px; }
+.sec-head h2 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; color: var(--ink-deep); margin-bottom: 10px; }
+.sec-head p { font-size: 14.5px; color: var(--slate); }
+.sec-deco { position: absolute; pointer-events: none; opacity: 0.65; }
+.deco-a { top: -62px; right: -62px; width: 220px; height: 220px; background: var(--tint-lavender); border-radius: 0 0 0 100%; }
+.deco-b { bottom: -72px; left: -72px; width: 240px; height: 240px; background: var(--tint-peach); border-radius: 0 100% 0 0; }
+.deco-c { top: 44px; right: 4%; width: 150px; height: 150px; background: var(--tint-mint); border-radius: 0 0 100% 0; }
 
-/* 注册协议勾选 */
-.agree-row {
-  display: flex; align-items: flex-start; gap: 8px;
-  margin: 4px 0 16px; font-size: 12.5px; color: var(--slate);
-  line-height: 1.6; cursor: pointer; user-select: none;
+/* 产品功能 */
+.feat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.feat-card {
+  background: var(--canvas); border: 1px solid var(--hairline); border-radius: 16px; padding: 24px 20px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
-.agree-row input[type='checkbox'] {
-  width: 15px; height: 15px; margin-top: 2px;
-  accent-color: var(--primary); cursor: pointer; flex-shrink: 0;
-}
+.feat-card:hover { box-shadow: var(--shadow-card); transform: translateY(-2px); }
+.feat-ico { width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+.fi-lavender { background: var(--tint-lavender); color: var(--primary); }
+.fi-sky { background: var(--tint-sky); color: var(--link-blue); }
+.fi-mint { background: var(--tint-mint); color: var(--brand-green); }
+.fi-peach { background: var(--tint-peach); color: var(--brand-orange); }
+.feat-title { font-size: 15.5px; font-weight: 700; margin-bottom: 6px; }
+.feat-desc { font-size: 13px; line-height: 1.7; color: var(--slate); }
 
-/* 找回密码 */
-.forgot-tip {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--tint-sky); color: var(--link-blue);
-  font-size: 13px; font-weight: 500; line-height: 1.5;
-  border-radius: var(--radius-md); padding: 11px 14px; margin-bottom: 18px;
+/* 使用流程 */
+.steps-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.step-card { background: var(--surface-soft); border: 1px solid var(--hairline); border-radius: 16px; padding: 26px 24px; }
+.step-num {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--ink-deep); color: #fff;
+  font-size: 15px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-bottom: 15px;
 }
-.sent-box {
-  display: flex; align-items: flex-start; gap: 10px;
-  background: var(--tint-mint); color: var(--brand-green);
-  border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 14px;
+.step-title { font-size: 15.5px; font-weight: 700; margin-bottom: 6px; }
+.step-desc { font-size: 13px; line-height: 1.75; color: var(--slate); }
+
+/* 常见问题 */
+.faq-list { border: 1px solid var(--hairline); border-radius: 16px; overflow: hidden; background: var(--canvas); }
+.faq-item + .faq-item { border-top: 1px solid var(--hairline); }
+.faq-q {
+  width: 100%; display: flex; align-items: center; gap: 11px; text-align: left;
+  background: transparent; border: none; font-family: inherit; cursor: pointer;
+  padding: 17px 20px; font-size: 15px; font-weight: 600; color: var(--ink);
 }
-.sent-box > svg { flex-shrink: 0; margin-top: 2px; }
-.sent-title { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
-.back-btn { margin-top: 4px; }
+.faq-q:hover { background: var(--surface-soft); }
+.faq-ico { display: flex; color: var(--stone); transition: transform 0.18s ease, color 0.18s ease; flex-shrink: 0; }
+.faq-q.open .faq-ico { transform: rotate(45deg); color: var(--primary); }
+.faq-a { padding: 0 20px 16px 46px; font-size: 13.5px; color: var(--slate); line-height: 1.75; }
 
-.divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--stone); font-size: 12px; }
-.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--hairline); }
+/* 底部 CTA */
+.cta-band-wrap { padding: 16px 32px 96px; }
+.cta-band {
+  max-width: 1136px; margin: 0 auto; border-radius: 24px; padding: 56px 32px; text-align: center;
+  background: linear-gradient(120deg, var(--tint-lavender), var(--tint-sky) 52%, var(--tint-mint));
+  position: relative; overflow: hidden;
+}
+.cta-band::before, .cta-band::after {
+  content: ''; position: absolute; background: rgba(255, 255, 255, 0.55); pointer-events: none;
+}
+.cta-band::before { top: -70px; left: -40px; width: 190px; height: 190px; border-radius: 0 0 100% 0; }
+.cta-band::after { bottom: -80px; right: -30px; width: 210px; height: 210px; border-radius: 100% 0 0 0; }
+.cta-band h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--brand-purple-800); margin-bottom: 10px; position: relative; z-index: 1; }
+.cta-band p { font-size: 14px; color: var(--slate); margin-bottom: 26px; position: relative; z-index: 1; }
+.cta-band .cta { position: relative; z-index: 1; }
 
+/* 页脚 */
+.foot { border-top: 1px solid var(--hairline); background: var(--surface-soft); }
+.foot-inner { max-width: 1200px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; }
+.foot-brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; color: var(--ink-deep); }
+.foot-cap { font-size: 12.5px; color: var(--stone); }
+
+/* ============ 响应式 ============ */
+@media (max-width: 1020px) {
+  .hero { padding: 140px 0 84px; }
+  .hero-inner { grid-template-columns: 1fr; gap: 64px; }
+  .hero-visual { max-width: 560px; margin: 0 auto; width: 100%; }
+  .feat-grid { grid-template-columns: repeat(2, 1fr); }
+  .steps-row { grid-template-columns: 1fr; }
+}
 @media (max-width: 860px) {
-  .page { flex-direction: column; overflow-y: auto; }
-  .hero { flex: none; padding: 48px 0; }
-  .hero-title { font-size: 32px; }
-  .hero-brand-name { font-size: 26px; }
-  .hero-logo { width: 44px; height: 44px; }
-  .form-side { flex: none; padding: 24px 16px 48px; }
-  .shape { display: none; }
+  .nav-links { display: none; }
+  .h1 { font-size: 34px; }
+  .shape-teal { width: 150px; height: 150px; top: -28px; right: -18px; }
+  .shape-yellow { width: 140px; height: 140px; bottom: -36px; left: -22px; }
+  .shape-purple { width: 68px; height: 68px; top: -16px; right: -12px; }
+  .sec { padding: 68px 0; }
+  .sec-head h2 { font-size: 25px; }
+}
+@media (max-width: 640px) {
+  .nav-inner, .hero-inner, .sec-inner, .foot-inner { padding-left: 20px; padding-right: 20px; }
+  .hero { padding: 128px 0 72px; }
+  .feat-grid { grid-template-columns: 1fr; }
+  .pill { padding: 8px 15px; font-size: 13px; }
+  .cta-row { flex-direction: column; align-items: flex-start; }
 }
 </style>

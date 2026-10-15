@@ -6,6 +6,7 @@
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { userProfile } from '@/store/study'
+import { isGuest, openAuth } from '@/store/auth'
 import { UPLOAD_ACCEPT, isSupportedImage } from '@/utils/uploadFormats'
 
 // ---------- 个人资料（userProfile 为共享状态，侧边栏用户卡片实时同步） ----------
@@ -183,7 +184,25 @@ function updatePassword() {
       <p class="text-sm">维护个人资料与账号安全</p>
     </header>
 
-    <!-- 账号与安全：个人资料 + 修改密码 -->
+    <!-- 游客态：待登录，仅展示提示卡片 -->
+    <template v-if="isGuest">
+      <div class="group-head">
+        <h2 class="group-title">账号与安全</h2>
+        <span class="group-sub">待登录</span>
+      </div>
+      <div class="card card-lg guest-state">
+        <span class="guest-ico"><AppIcon name="lock" :size="22" /></span>
+        <div class="guest-title">登录后即可管理个人资料与账号安全</div>
+        <p class="guest-desc">当前为游客模式，仅可浏览演示内容。登录或注册后，即可在这里维护头像、用户名、手机号、邮箱与密码。</p>
+        <div class="guest-actions">
+          <button class="btn btn-primary" data-guest-allow @click="openAuth('login')">立即登录</button>
+          <button class="btn btn-secondary" data-guest-allow @click="openAuth('register')">注册新账号</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- 已登录：个人资料 + 修改密码 -->
+    <template v-else>
     <div class="group-head">
       <h2 class="group-title">账号与安全</h2>
       <span class="group-sub">资料 · 密码</span>
@@ -306,6 +325,7 @@ function updatePassword() {
           </section>
         </div>
       </div>
+    </template>
 
     <!-- 保存资料确认弹窗 -->
     <div v-if="showSaveConfirm" class="modal-mask" @click.self="showSaveConfirm = false">
@@ -331,6 +351,20 @@ function updatePassword() {
 .group-head::after { content: ''; flex: 1; height: 1px; background: var(--hairline); }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .col { display: flex; flex-direction: column; gap: 16px; }
+
+/* ---------- 游客态：待登录提示 ---------- */
+.guest-state {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 56px 32px; margin-top: 4px;
+}
+.guest-ico {
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--tint-lavender); color: var(--primary);
+  display: flex; align-items: center; justify-content: center; margin-bottom: 16px;
+}
+.guest-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.guest-desc { font-size: 13px; color: var(--slate); line-height: 1.7; max-width: 420px; margin-bottom: 20px; }
+.guest-actions { display: flex; gap: 10px; }
 
 /* ---------- 个人资料 ---------- */
 .avatar-edit {

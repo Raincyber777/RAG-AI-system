@@ -1,12 +1,16 @@
 <script setup lang="ts">
 /**
  * 全局布局：左侧导航栏 + 右侧内容区
- * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 数据看板 / 设置 / 反馈
+ * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 自创题练习 / 数据看板 / 个人设置 / 问题反馈 / 使用说明
+ * 游客模式：主内容区只读 —— 点击按钮 / 输入 / 拖拽上传等交互统一弹出登录弹窗；
+ * 侧边栏导航（查看各页面）与退出登录不受限制
  */
 import { useRouter, useRoute } from 'vue-router'
 import { ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AuthModal from '@/components/AuthModal.vue'
 import { userProfile } from '@/store/study'
+import { isGuest, logout as authLogout, openAuth } from '@/store/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -31,23 +35,71 @@ function goSettings() {
 const showLogoutConfirm = ref(false)
 function handleLogout() {
   showLogoutConfirm.value = false
-  localStorage.removeItem('zy_token')
+  authLogout()
   router.push('/login')
+}
+
+/* ---------- 游客模式守卫：拦截主内容区的交互，统一弹出登录 ---------- */
+const INTERACTIVE = 'button, input, textarea, select, label, a[href], [role="button"], [tabindex="0"]'
+function guestAllowed(t: HTMLElement) {
+  return !!t.closest('[data-guest-allow]')
+}
+function guestClick(e: MouseEvent) {
+  if (!isGuest.value) return
+  const t = e.target as HTMLElement | null
+  if (!t || guestAllowed(t) || !t.closest(INTERACTIVE)) return
+  e.preventDefault()
+  e.stopPropagation()
+  openAuth('login')
+}
+function guestMouseDown(e: MouseEvent) {
+  if (!isGuest.value) return
+  const t = e.target as HTMLElement | null
+  if (!t || guestAllowed(t)) return
+  // 阻止输入框聚焦：游客态下输入框只读
+  if (t.closest('input, textarea, select')) e.preventDefault()
+}
+function guestDragOver(e: DragEvent) {
+  if (!isGuest.value) return
+  // 阻止浏览器直接打开拖入的文件；drop 时统一弹出登录
+  e.preventDefault()
+}
+function guestDrop(e: DragEvent) {
+  if (!isGuest.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  openAuth('login')
 }
 </script>
 
 <template>
-  <div class="shell">
+  <div
+    class="shell"
+    @click.capture="guestClick"
+    @mousedown.capture="guestMouseDown"
+    @dragover.capture="guestDragOver"
+    @drop.capture="guestDrop"
+  >
     <!-- 移动端顶栏 -->
-    <header class="mobile-topbar">
+    <header class="mobile-topbar" data-guest-allow>
       <button class="btn-ghost btn" @click="sidebarOpen = !sidebarOpen"><AppIcon name="menu" /></button>
       <span class="h4">智学纪要</span>
     </header>
 
     <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ open: sidebarOpen }">
+    <aside class="sidebar" :class="{ open: sidebarOpen }" data-guest-allow>
       <div class="brand" @click="router.push('/studio')">
-        <div class="brand-logo"><AppIcon name="headphones" :size="18" /></div>
+        <div class="brand-logo">
+          <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#zx-nav)" />
+            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
+            <defs>
+              <linearGradient id="zx-nav" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6d5ae0" /><stop offset="1" stop-color="#4534b3" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
         <div>
           <div class="brand-name">智学纪要</div>
           <div class="brand-sub">多模态课堂知识助手</div>
@@ -81,10 +133,11 @@ function handleLogout() {
           @keydown.space.prevent="goSettings"
         >
           <img v-if="userProfile.avatar" :src="userProfile.avatar" class="avatar avatar-photo" :alt="userProfile.name + ' 的头像'" />
+          <div v-else-if="isGuest" class="avatar avatar-guest"><AppIcon name="user" :size="17" /></div>
           <div v-else class="avatar" :style="{ background: userProfile.color }">{{ userProfile.name[0] }}</div>
           <div class="flex-1 ellipsis">
-            <div class="user-name">{{ userProfile.name }}</div>
-            <div class="user-mail ellipsis">{{ userProfile.email }}</div>
+            <div class="user-name">{{ isGuest ? '游客' : userProfile.name }}</div>
+            <div class="user-mail ellipsis">{{ isGuest ? '未登录 · 仅可浏览' : userProfile.email }}</div>
           </div>
           <button class="icon-btn" title="退出登录" aria-label="退出登录" @click.stop="showLogoutConfirm = true"><AppIcon name="logout" :size="16" /></button>
         </div>
@@ -92,7 +145,7 @@ function handleLogout() {
     </aside>
 
     <!-- 遮罩（移动端） -->
-    <div v-if="sidebarOpen" class="mask" @click="sidebarOpen = false"></div>
+    <div v-if="sidebarOpen" class="mask" data-guest-allow @click="sidebarOpen = false"></div>
 
     <!-- 内容区 -->
     <main class="content">
@@ -100,7 +153,7 @@ function handleLogout() {
     </main>
 
     <!-- 退出登录确认弹窗 -->
-    <div v-if="showLogoutConfirm" class="modal-mask" @click.self="showLogoutConfirm = false">
+    <div v-if="showLogoutConfirm" class="modal-mask" data-guest-allow @click.self="showLogoutConfirm = false">
       <div class="modal modal-sm">
         <div class="modal-title">退出登录</div>
         <p class="modal-sub">确定要退出当前账号吗？退出后需重新登录才能继续使用。</p>
@@ -110,6 +163,9 @@ function handleLogout() {
         </div>
       </div>
     </div>
+
+    <!-- 登录 / 注册弹窗（游客态触发交互时弹出，登录后原地恢复完整权限） -->
+    <AuthModal />
   </div>
 </template>
 
@@ -130,11 +186,7 @@ function handleLogout() {
   display: flex; align-items: center; gap: 10px; padding: 20px 16px;
   border-bottom: 1px solid var(--hairline-soft); cursor: pointer;
 }
-.brand-logo {
-  width: 34px; height: 34px; border-radius: var(--radius-md);
-  background: var(--brand-navy); color: var(--brand-yellow);
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-}
+.brand-logo { display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; }
 .brand-sub { font-size: 11px; color: var(--stone); }
 
@@ -157,6 +209,8 @@ function handleLogout() {
 .user-card:hover { background: var(--surface-soft); }
 .user-card:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .avatar-photo { object-fit: cover; }
+/* 游客态头像：灰色人形占位 */
+.avatar-guest { background: var(--surface); color: var(--stone); }
 .user-name { font-size: 13px; font-weight: 600; }
 .user-mail { font-size: 11px; color: var(--stone); }
 .icon-btn {
