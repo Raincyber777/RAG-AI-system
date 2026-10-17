@@ -310,6 +310,9 @@ const genError = ref('')
 const stepTimers: number[] = []
 let typeTimer: number | null = null
 let revealTimer: number | null = null
+// 真实流水线状态轮询（后端 processing → done / failed）
+let pollTimer: number | null = null
+let pollCount = 0
 
 function clearAllTimers() {
   for (const t of stepTimers) window.clearTimeout(t)
@@ -317,6 +320,7 @@ function clearAllTimers() {
   if (typeTimer) { window.clearInterval(typeTimer); typeTimer = null }
   if (revealTimer) { window.clearInterval(revealTimer); revealTimer = null }
   if (zoneTipTimer) { window.clearTimeout(zoneTipTimer); zoneTipTimer = undefined }
+  if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null }
 }
 
 function runSteps() {
@@ -462,6 +466,33 @@ function startGenerate() {
   createPromise.then(
     (apiNote) => {
       if (genState.value !== 'running') return // 用户已停止 / 重置
+      if (apiNote.status === 'processing') {
+        // 真实流水线进行中（转写 / 生成耗时数十秒）：轮询详情直至完成，
+        // 步骤条停在「生成纪要」running，内容就绪后再进入流式渲染
+        pollCount = 0
+        pollTimer = window.setInterval(async () => {
+          pollCount++
+          if (pollCount > 150) { // 约 10 分钟仍未完成
+            clearAllTimers()
+            genState.value = 'stopped'
+            genError.value = '生成超时，请稍后在「我的纪要」查看状态或重新处理'
+            return
+          }
+          try {
+            const n = await notesApi.detail(String(apiNote.id))
+            if (n.status === 'done') {
+              clearAllTimers()
+              note.value = noteFromApi(n)
+              tryBeginStreaming()
+            } else if (n.status === 'failed') {
+              clearAllTimers()
+              genState.value = 'stopped'
+              genError.value = '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / TXT / MD），可重新处理或更换材料'
+            }
+          } catch { /* 网络抖动等下一轮 */ }
+        }, 4000)
+        return
+      }
       note.value = noteFromApi(apiNote)
       tryBeginStreaming()
     },
@@ -512,9 +543,18 @@ function citeIcon(cite: string) {
 function showSource(cite: string) {
   if (activeSource.value?.cite === cite) { activeSource.value = null; return }
   const n = note.value
-  const snippet = cite.startsWith('录音')
-    ? `「${n?.title ?? '本节课'}」录音 ${cite.replace('录音 ', '')} 处原文：老师正在讲解该知识点的完整推导过程……（演示片段，接入真实转写后显示原文）`
-    : `「${n?.title ?? '本节课'}」${cite} 原图：${cite.startsWith('PPT') ? '幻灯片页面' : '板书照片'}，已由多模态模型识别出标题、公式与批注文字。`
+  // 转写行带 [mm:ss] 时可定位到录音原文；否则回退通用说明
+  let snippet = ''
+  if (cite.startsWith('录音') && n?.transcript) {
+    const ts = cite.replace('录音 ', '')
+    const line = n.transcript.split('\n').find((l) => l.startsWith(`[${ts}]`))
+    if (line) snippet = `「${n.title}」录音 ${ts} 处原文：${line.replace(/^\[\d{1,2}:\d{2}\]\s*/, '')}`
+  }
+  if (!snippet) {
+    snippet = cite.startsWith('录音')
+      ? `「${n?.title ?? '本节课'}」录音 ${cite.replace('录音 ', '')} 处原文`
+      : `「${n?.title ?? '本节课'}」${cite} 原图：${cite.startsWith('PPT') ? '幻灯片页面' : '板书照片'}，已由多模态模型识别出标题、公式与批注文字。`
+  }
   activeSource.value = { cite, snippet }
 }
 

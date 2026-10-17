@@ -26,6 +26,7 @@ export function noteFromApi(n: ApiNote): ClassNote {
     points: n.points.map((p) => ({ text: p.text, cite: p.ref || '' })),
     definitions: n.definitions.map((d) => ({ term: d.term, detail: d.text, cite: d.ref || '' })),
     emphasized: [...n.emphasized],
+    transcript: n.transcript || '',
   }
 }
 

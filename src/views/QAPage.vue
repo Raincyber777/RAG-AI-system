@@ -12,8 +12,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import SparkMark from '@/components/SparkMark.vue'
 import { classNotes, ensureNotesLoaded } from '@/store/study'
 import { isGuest } from '@/store/auth'
-import { qaApi, type ApiQaRecord } from '@/api'
-import { ApiError } from '@/api/http'
+import { qaApi, streamAsk, type ApiQaRecord } from '@/api'
 import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
 import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
@@ -469,8 +468,14 @@ function revokeAllAttachPreviews() {
 }
 
 // ---------- 发送 ----------
-/** 提问时并行发起的后端问答请求（回答就绪后流式渲染）；失败时携带 error 字段 */
-let askPromise: Promise<ApiQaRecord | { error: string }> | null = null
+/** SSE 流式问答缓冲：后端增量实时写入 text，streamAnswer 以打字速度追赶展示 */
+interface AskBuf {
+  text: string
+  error: string | null
+  record: ApiQaRecord | null
+}
+let askBuf: AskBuf | null = null
+let askPromise: Promise<void> | null = null
 
 function send() {
   const text = input.value.trim()
@@ -490,17 +495,28 @@ function send() {
   askQuestion(text)
 }
 
-/** 提问：阶段动画进行的同时调用后端问答接口，两端都就绪后流式渲染真实回答 */
+/** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显 */
 function askQuestion(text: string) {
   isTyping.value = true
   runStages()
   if (isGuest.value) {
     askPromise = null // 游客态回退到本地演示回答
+    askBuf = null
     return
   }
-  askPromise = qaApi
-    .ask(activeSession.value?.noteId ?? null, text)
-    .catch((e: unknown) => ({ error: e instanceof ApiError ? e.message : '网络异常，请稍后再试' }))
+  const buf: AskBuf = { text: '', error: null, record: null }
+  askBuf = buf
+  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf)
+    .then((record) => {
+      buf.record = record
+      if (record) {
+        const note = activeNote.value
+        if (note) note.questions++ // 会话角标即时 +1（下次拉取与后端计数对齐）
+      }
+    })
+    .catch(() => {
+      if (!buf.error) buf.error = '网络异常，请稍后再试'
+    })
 }
 
 async function streamAnswer() {
@@ -515,44 +531,65 @@ async function streamAnswer() {
   scrollToBottom()
 
   const pending = askPromise
+  const buf = askBuf
   askPromise = null
-  let content = ''
-  let citations: Citation[] = []
-  const r = await pending
-  if (!r) {
-    const reply = buildReply()
-    content = reply.content
-    citations = reply.citations
-  } else if ('error' in r) {
-    content = `回答生成失败：${r.error}`
-  } else {
-    content = r.answer
-    citations = r.references.map((ref, i) => ({
-      no: i + 1,
-      kind: ref.time ? 'audio' : 'image',
-      mark: ref.time || ref.label,
-      note: r.note_title,
-      snippet: ref.detail,
-      score: Math.max(0.6, 0.92 - i * 0.08),
-    }))
-    msg.liked = r.liked
-    msg.qaId = r.id
-    if (r.followups?.length) msg.followups = r.followups
-    const note = activeNote.value
-    if (note) note.questions++ // 会话角标即时 +1（下次拉取与后端计数对齐）
-  }
-  msg.citations = citations
+  askBuf = null
 
-  let i = 0
+  // 游客 / 请求未发出：本地演示回答按原逐字节奏输出
+  if (!pending || !buf) {
+    const reply = buildReply()
+    msg.citations = reply.citations
+    let i = 0
+    const timer = window.setInterval(() => {
+      i += 2 + Math.floor(Math.random() * 3)
+      msg.content = reply.content.slice(0, i)
+      if (i >= reply.content.length) {
+        window.clearInterval(timer)
+        streamTimer = null
+        isStreaming.value = false
+        scrollToBottom()
+      }
+    }, 30)
+    streamTimer = timer
+    return
+  }
+
+  // 真流式：展示进度追赶 SSE 缓冲；流结束后落引用 / 追问 / 点赞态
+  let reveal = 0
+  let settled = false
+  void pending.then(() => {
+    settled = true
+  })
   const timer = window.setInterval(() => {
-    i += 2 + Math.floor(Math.random() * 3)
-    msg.content = content.slice(0, i)
-    if (i >= content.length) {
-      window.clearInterval(timer)
-      streamTimer = null
-      isStreaming.value = false
+    if (reveal < buf.text.length) {
+      reveal = Math.min(buf.text.length, reveal + 2 + Math.floor(Math.random() * 3))
+      msg.content = buf.text.slice(0, reveal)
       scrollToBottom()
+      return
     }
+    if (!settled) return // 回答还没收完：继续等下一个增量
+    window.clearInterval(timer)
+    streamTimer = null
+    if (buf.error) {
+      msg.content = `回答生成失败：${buf.error}`
+    } else {
+      const r = buf.record
+      if (r) {
+        msg.citations = r.references.map((ref, i) => ({
+          no: i + 1,
+          kind: ref.time ? 'audio' : 'image',
+          mark: ref.time || ref.label,
+          note: r.note_title,
+          snippet: ref.detail,
+          score: Math.max(0.6, 0.92 - i * 0.08),
+        }))
+        msg.liked = r.liked
+        msg.qaId = r.id
+        if (r.followups?.length) msg.followups = r.followups
+      }
+    }
+    isStreaming.value = false
+    scrollToBottom()
   }, 30)
   streamTimer = timer
 }

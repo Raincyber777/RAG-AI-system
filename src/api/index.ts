@@ -2,7 +2,7 @@
  * 后端接口清单（与 Django 后端一一对应，返回原始字段）
  * 前端各 store 负责把这里的数据映射为页面模型（ClassNote / Citation / QuizQuestion 等）
  */
-import { request, listAll, buildForm } from './http'
+import { request, listAll, buildForm, BASE, getToken } from './http'
 
 export type ApiRole = 'user' | 'admin' | 'super'
 
@@ -114,6 +114,66 @@ export const qaApi = {
   suggestions: () => request<{ suggestions: string[] }>('/qa/suggestions/'),
 }
 
+/**
+ * SSE 流式问答：回答增量实时写入 buf.text（event: delta），结束返回完整问答记录（event: done）。
+ * 接口报错（如未完成纪要 400）写入 buf.error；网络 / 流异常时也以 buf.error 收尾，
+ * 页面凭 buf 已有内容与错误态渲染，不再二次请求。
+ */
+export async function streamAsk(
+  noteId: string | null,
+  question: string,
+  buf: { text: string; error: string | null },
+): Promise<ApiQaRecord | null> {
+  let res: Response
+  try {
+    res = await fetch(`${BASE}/qa/ask/stream/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ ...(noteId ? { note_id: Number(noteId) } : {}), question }),
+    })
+  } catch {
+    buf.error = '网络异常，请稍后再试'
+    return null
+  }
+  if (!res.ok || !res.body) {
+    try {
+      const data = await res.json()
+      buf.error = typeof data.detail === 'string' ? data.detail : `请求失败（${res.status}）`
+    } catch {
+      buf.error = `请求失败（${res.status}）`
+    }
+    return null
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let carry = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    carry += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = carry.indexOf('\n\n')) >= 0) {
+      const block = carry.slice(0, idx)
+      carry = carry.slice(idx + 2)
+      let name = 'message'
+      let dataStr = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) name = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataStr += line.slice(5).trim()
+      }
+      if (!dataStr) continue
+      try {
+        const payload = JSON.parse(dataStr)
+        if (name === 'delta' && typeof payload.text === 'string') buf.text += payload.text
+        else if (name === 'done') return payload as ApiQaRecord
+      } catch {
+        // 跳过无法解析的帧
+      }
+    }
+  }
+  return null // 流结束但未等到 done：以已展示文本收尾（无引用）
+}
+
 // ---------- 题库 / 错题本 ----------
 export type ApiQuizType = 'single' | 'multiple' | 'indefinite' | 'judge' | 'blank' | 'answer'
 
@@ -123,10 +183,13 @@ export interface ApiQuizItem {
   course: string
   chapter: string
   type: ApiQuizType
+  difficulty: string
   stem: string
   options: string[] | null
   answer: string
   analysis: string
+  cite: string
+  knowledge: string
   uploader: number
   uploader_name: string
   created_at: string
@@ -163,8 +226,12 @@ export interface ApiSubmitResult {
 
 export const quizApi = {
   list: () => listAll<ApiQuizItem>('/quiz/'),
-  generate: (noteId: string, count = 5) =>
-    request<ApiQuizItem[]>('/quiz/generate/', { method: 'POST', data: { note_id: Number(noteId), count } }),
+  /** LLM 出题入库（types 限定题型，传后端题型名或前端别名 multi/short 均可） */
+  generate: (noteId: string, count = 5, types?: string[]) =>
+    request<ApiQuizItem[]>('/quiz/generate/', {
+      method: 'POST',
+      data: { note_id: Number(noteId), count, ...(types?.length ? { types } : {}) },
+    }),
   submit: (id: number, answer: string) =>
     request<ApiSubmitResult>(`/quiz/${id}/submit/`, { method: 'POST', data: { answer } }),
   wrongList: () => listAll<ApiWrongRecord>('/quiz/wrong/'),

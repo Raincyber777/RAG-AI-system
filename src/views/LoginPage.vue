@@ -101,7 +101,7 @@ const visibleFaqs = computed(() => {
 })
 onMounted(async () => {
   try {
-    const list = await faqApi.list('home')
+    const list = await faqApi.list('user')
     if (list.length) faqs.value = list.map((f) => ({ q: f.q, a: f.a }))
   } catch {
     // 后端不可达时展示内置常见问题

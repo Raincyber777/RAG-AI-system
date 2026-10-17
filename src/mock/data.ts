@@ -30,6 +30,7 @@ export interface ClassNote {
   points: KeyPoint[] // 核心知识点
   definitions: Definition[] // 重要定义与公式
   emphasized: string[] // 重点问题
+  transcript?: string // 转写原文（行首带 [mm:ss] 时间戳，溯源卡片定位用）
 }
 
 export const mockNotes: ClassNote[] = [

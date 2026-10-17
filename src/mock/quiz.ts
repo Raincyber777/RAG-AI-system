@@ -60,31 +60,35 @@ export function quizTypeFromApi(t: ApiQuizType): QuizType {
   return t
 }
 
-/** 后端题目 → 页面题目模型（难度后端暂未记录，统一按「中等」展示） */
+/** 后端题目 → 页面题目模型（难度 / 来源引用 / 知识点标签由 LLM 出题时生成） */
 export function quizFromApi(item: {
   id: number
   note?: number | null
   course: string
   chapter: string
   type: ApiQuizType
+  difficulty?: string
   stem: string
   options: string[] | null
   answer: string
   analysis: string
+  cite?: string
+  knowledge?: string
 }): QuizQuestion {
+  const diffs: QuizDifficulty[] = ['简单', '中等', '困难']
   return {
     id: String(item.id),
     noteId: item.note != null ? String(item.note) : '',
     course: item.course,
     chapter: item.chapter,
     type: quizTypeFromApi(item.type),
-    difficulty: '中等',
+    difficulty: diffs.includes(item.difficulty as QuizDifficulty) ? (item.difficulty as QuizDifficulty) : '中等',
     stem: item.stem,
     options: item.options ?? undefined,
     answer: item.answer,
     analysis: item.analysis,
-    knowledge: item.chapter,
-    cite: '',
+    knowledge: item.knowledge || item.chapter,
+    cite: item.cite || '',
   }
 }
 

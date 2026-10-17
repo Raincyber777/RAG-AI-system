@@ -5,7 +5,7 @@
  * - 统一解析 DRF 错误响应（{detail} / 字段错误对象）为 Error(message)
  */
 
-const BASE = 'http://localhost:8000/api'
+export const BASE = 'http://localhost:8000/api'
 export const TOKEN_KEY = 'zy_token'
 export const REFRESH_KEY = 'zy_refresh'
 

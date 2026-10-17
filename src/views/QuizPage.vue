@@ -139,7 +139,8 @@ function startGenerate() {
             ? f.noteId
             : (notesOfCourse.value[0]?.id ?? '')
         if (genNoteId) {
-          const items = await quizApi.generate(genNoteId, Math.max(f.count, 5))
+          // 按用户勾选的题型大类出题（选择题展开为单选 / 多选 / 不定项），保证抽题范围与生成一致
+          const items = await quizApi.generate(genNoteId, Math.max(f.count, 5), expandTypeGroups([...types.value]))
           const mapped = items.map(quizFromApi)
           pool.value = [...pool.value, ...mapped.filter((m) => !pool.value.some((p) => p.id === m.id))]
         }
