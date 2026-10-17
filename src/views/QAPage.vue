@@ -9,8 +9,12 @@
 import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
-import { classNotes } from '@/store/study'
-import { initialMessages, demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
+import SparkMark from '@/components/SparkMark.vue'
+import { classNotes, ensureNotesLoaded } from '@/store/study'
+import { isGuest } from '@/store/auth'
+import { qaApi, type ApiQaRecord } from '@/api'
+import { ApiError } from '@/api/http'
+import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
 import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
 const route = useRoute()
@@ -140,6 +144,7 @@ function removeSession(s: QaSession) {
   const idx = qaSessions.value.indexOf(s)
   if (idx !== -1) qaSessions.value.splice(idx, 1)
   delete messageStore[s.id]
+  loadedSessions.delete(s.id)
   if (activeSessionId.value === s.id) {
     if (isTyping.value || isStreaming.value) stopGenerating()
     const first = qaSessions.value[0]
@@ -176,11 +181,49 @@ const activeNote = computed(() =>
   activeSession.value?.noteId ? classNotes.value.find((n) => n.id === activeSession.value?.noteId) : undefined
 )
 
+// ---------- 历史记录（来自后端问答记录，会话首次切入时拉取一次） ----------
+const loadedSessions = new Set<string>()
+
+/** 后端问答记录 → 会话内两条消息（用户提问 + 助手回答） */
+function recordToMessages(r: ApiQaRecord): ChatMessage[] {
+  const citations: Citation[] = r.references.map((ref, i) => ({
+    no: i + 1,
+    kind: ref.time ? 'audio' : 'image',
+    mark: ref.time || ref.label,
+    note: r.note_title,
+    snippet: ref.detail,
+    score: Math.max(0.6, 0.92 - i * 0.08),
+  }))
+  const time = r.created_at.slice(11, 16) || now()
+  return [
+    { id: 'q' + r.id, role: 'user', content: r.question, time },
+    {
+      id: 'a' + r.id, role: 'assistant', content: r.answer,
+      citations, liked: r.liked, qaId: r.id, time,
+    },
+  ]
+}
+
+async function loadHistory(id: string) {
+  if (loadedSessions.has(id) || isGuest.value) return
+  const s = qaSessions.value.find((x) => x.id === id)
+  if (!s?.noteId) return // 自由对话暂无历史
+  loadedSessions.add(id)
+  try {
+    const records = await qaApi.list(s.noteId)
+    messagesFor(id).push(...records.flatMap(recordToMessages))
+    if (id === activeSessionId.value) scrollToBottom(true)
+  } catch {
+    loadedSessions.delete(id) // 加载失败：切回该会话时可重试
+  }
+}
+
 function switchSession(id: string) {
   if (id === activeSessionId.value) return
   if (isTyping.value || isStreaming.value) stopGenerating()
   activeSessionId.value = id
   messagesFor(id)
+  void loadHistory(id)
   scrollToBottom(true)
 }
 
@@ -426,6 +469,9 @@ function revokeAllAttachPreviews() {
 }
 
 // ---------- 发送 ----------
+/** 提问时并行发起的后端问答请求（回答就绪后流式渲染）；失败时携带 error 字段 */
+let askPromise: Promise<ApiQaRecord | { error: string }> | null = null
+
 function send() {
   const text = input.value.trim()
   if ((!text && !attachments.value.length) || isTyping.value || isStreaming.value || !activeSessionId.value) return
@@ -441,28 +487,66 @@ function send() {
   attachments.value = []
   input.value = ''
   scrollToBottom()
-  isTyping.value = true
-  runStages()
+  askQuestion(text)
 }
 
-function streamAnswer() {
+/** 提问：阶段动画进行的同时调用后端问答接口，两端都就绪后流式渲染真实回答 */
+function askQuestion(text: string) {
+  isTyping.value = true
+  runStages()
+  if (isGuest.value) {
+    askPromise = null // 游客态回退到本地演示回答
+    return
+  }
+  askPromise = qaApi
+    .ask(activeSession.value?.noteId ?? null, text)
+    .catch((e: unknown) => ({ error: e instanceof ApiError ? e.message : '网络异常，请稍后再试' }))
+}
+
+async function streamAnswer() {
   isStreaming.value = true
-  const reply = buildReply()
   const msg: ChatMessage = reactive({
     id: 'a' + Date.now(),
     role: 'assistant',
     content: '',
-    citations: reply.citations,
     time: now(),
   })
   if (activeSessionId.value) messagesFor(activeSessionId.value).push(msg)
   scrollToBottom()
 
+  const pending = askPromise
+  askPromise = null
+  let content = ''
+  let citations: Citation[] = []
+  const r = await pending
+  if (!r) {
+    const reply = buildReply()
+    content = reply.content
+    citations = reply.citations
+  } else if ('error' in r) {
+    content = `回答生成失败：${r.error}`
+  } else {
+    content = r.answer
+    citations = r.references.map((ref, i) => ({
+      no: i + 1,
+      kind: ref.time ? 'audio' : 'image',
+      mark: ref.time || ref.label,
+      note: r.note_title,
+      snippet: ref.detail,
+      score: Math.max(0.6, 0.92 - i * 0.08),
+    }))
+    msg.liked = r.liked
+    msg.qaId = r.id
+    const note = activeNote.value
+    if (note) note.questions++ // 会话角标即时 +1（下次拉取与后端计数对齐）
+  }
+  msg.citations = citations
+
   let i = 0
   const timer = window.setInterval(() => {
     i += 2 + Math.floor(Math.random() * 3)
-    msg.content = reply.content.slice(0, i)
-    if (i >= reply.content.length) {
+    msg.content = content.slice(0, i)
+    if (i >= content.length) {
       window.clearInterval(timer)
       streamTimer = null
       isStreaming.value = false
@@ -476,13 +560,18 @@ function regenerate(msg: ChatMessage) {
   if (isStreaming.value || isTyping.value || !activeSessionId.value) return
   const list = messagesFor(activeSessionId.value)
   const idx = list.indexOf(msg)
+  const question = [...list.slice(0, idx)].reverse().find((m) => m.role === 'user')?.content ?? ''
   list.splice(idx, 1)
-  streamAnswer()
+  askQuestion(question) // 重新提问（后端生成一条新记录）
 }
 
 function toggleLike(msg: ChatMessage, liked: boolean) {
   msg.liked = liked ? !msg.liked : false
   msg.disliked = !liked ? !msg.disliked : false
+  // 点赞同步到后端（后端为切换语义）；点踩仅本地记录
+  if (msg.qaId) {
+    void qaApi.like(msg.qaId).then((r) => { msg.liked = r.liked }).catch(() => {})
+  }
 }
 
 function copyMessage(msg: ChatMessage) {
@@ -564,18 +653,22 @@ function now() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 初始对话：支持 /qa?note=id 直达；首个对话预置一轮演示
-onMounted(() => {
+// 初始对话：支持 /qa?note=id 直达；纪要异步加载完成后补齐会话列表再选中
+onMounted(async () => {
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKey)
+  await ensureNotesLoaded()
+  // note 对话按最新纪要列表补齐（watch 为异步触发，这里先行补齐一次）
+  for (const n of classNotes.value) {
+    if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
+      qaSessions.value.push({ id: n.id, title: n.title, noteId: n.id })
+    }
+  }
   const q = route.query.note
   const id = typeof q === 'string' ? q : ''
   const exists = qaSessions.value.some((s) => s.id === id)
   activeSessionId.value = exists ? id : (qaSessions.value[0]?.id ?? '')
-  if (activeSessionId.value && !messageStore[activeSessionId.value]) {
-    messageStore[activeSessionId.value] =
-      activeSessionId.value === 'n1' ? initialMessages.map((m) => ({ ...m })) : []
-  }
+  if (activeSessionId.value) void loadHistory(activeSessionId.value)
   nextTick(() => scrollToBottom(true))
 })
 
@@ -680,7 +773,8 @@ onBeforeUnmount(() => {
         <div ref="messagesEl" class="messages" @scroll.passive="onMessagesScroll">
           <!-- 空状态 -->
           <div v-if="!activeMessages.length" class="welcome fade-in">
-            <div class="welcome-logo"><AppIcon name="chat" :size="28" /></div>
+            <!-- 欢迎标：logo 同款四角星（白紫渐变流动 + 边缘水晶扫光） -->
+            <div class="welcome-logo"><SparkMark :size="36" /></div>
             <h2 class="h2">针对课堂内容，想问点什么？</h2>
             <p class="text-md muted">回答基于课堂纪要、转写稿与板书生成，每句话都能溯源到录音时间点或图片。</p>
             <div class="sug-grid">

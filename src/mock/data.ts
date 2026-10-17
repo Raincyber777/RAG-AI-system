@@ -165,6 +165,8 @@ export interface ChatMessage {
   attachments?: ChatAttachment[]
   liked?: boolean
   disliked?: boolean
+  /** 后端问答记录 id（历史消息点赞同步用；本地新发消息在回答就绪后回填） */
+  qaId?: number
   time: string
 }
 

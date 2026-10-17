@@ -2,30 +2,32 @@
 /**
  * 自创题练习：基于已完成的课堂纪要生成练习题并作答
  * 流程：筛选（课程 / 章节 / 题型 / 难度 / 题量；选择题大类随机生成单选 / 多选 / 不定项）
- *      → 生成（模拟 loading + 缓存 + 随机失败重试）
+ *      → 生成（题目来自后端题库 /quiz/；所选范围暂无题目时先调 /quiz/generate 出题入库）
  *      → 逐题作答（单选 / 多选 / 不定项 / 判断 / 填空 / 简答）→ 批改（对错 / 正确答案 / 解析 / 知识点）
- *      → 错题一键加入错题本；页签角标只提示「新错题」个数，进入错题本查看后即消失
+ *      → 批改结果实时同步后端（答错自动记入错题本、重练答对自动移出）
  *      → 错题本支持按课程 / 章节筛选重练，点击错题卡片可查看题目详情，列表分页展示
- * 接入真实后端后：startGenerate 内替换为 POST /quiz/generate（SSE 进度），批改走 /quiz/grade
  */
-import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
-import { classNotes } from '@/store/study'
+import { classNotes, ensureNotesLoaded } from '@/store/study'
+import { isGuest } from '@/store/auth'
+import { quizApi } from '@/api'
+import { ApiError } from '@/api/http'
 import {
   QUIZ_TYPE_TEXT,
   QUIZ_TYPE_GROUP_TEXT,
   expandTypeGroups,
   sourceLabel,
-  getCachedQuiz,
-  generateQuiz,
+  quizFromApi,
+  pickQuestions,
   type QuizQuestion,
   type QuizType,
   type QuizTypeGroup,
   type QuizDifficulty,
   type QuizFilter,
 } from '@/mock/quiz'
-import { wrongBook, newWrongIds, markWrongBookRead, addToWrongBook, removeFromWrongBook, type WrongBookItem } from '@/store/quiz'
+import { wrongBook, newWrongIds, markWrongBookRead, addToWrongBook, removeFromWrongBook, refreshWrongBook, type WrongBookItem } from '@/store/quiz'
 
 // ---------- 顶部页签 ----------
 const tab = ref<'practice' | 'wrong'>('practice')
@@ -59,6 +61,10 @@ const count = ref(10)
 watch(courseId, () => {
   noteId.value = 'all'
 })
+// 纪要列表异步加载完成后，默认选中第一个课程
+watch(courses, (list) => {
+  if (!courseId.value && list.length) courseId.value = list[0]!
+})
 
 function toggleType(t: QuizTypeGroup) {
   if (genState.value === 'generating') return
@@ -70,47 +76,93 @@ function toggleType(t: QuizTypeGroup) {
   }
 }
 
-// ---------- 生成（模拟接口：进度动画 + 缓存命中 + 随机失败） ----------
+// ---------- 生成（题库来自后端 /api/quiz/，本地按条件抽题；进度动画期间并行拉取） ----------
 const GEN_STEPS = ['正在检索课堂知识片段…', '正在提炼可考点…', '正在生成交互题目…', '正在匹配来源引用…']
 const genState = ref<'idle' | 'generating' | 'error'>('idle')
 const progress = ref(0)
 const genStep = ref(GEN_STEPS[0])
 const errorMsg = ref('')
-const fromCache = ref(false)
 let progressTimer: number | undefined
 let finishTimer: number | undefined
 
+const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+// ---------- 题库（后端题目映射为页面题目模型，抽题数量不足时逐级放宽） ----------
+const pool = ref<QuizQuestion[]>([])
+let poolLoaded = false
+async function ensurePoolLoaded(): Promise<QuizQuestion[]> {
+  if (isGuest.value) return []
+  if (!poolLoaded) {
+    poolLoaded = true
+    try {
+      const items = await quizApi.list()
+      pool.value = items.map(quizFromApi)
+    } catch {
+      poolLoaded = false // 拉取失败：下次重新拉取
+    }
+  }
+  return pool.value
+}
+onMounted(() => {
+  void ensureNotesLoaded()
+  void ensurePoolLoaded()
+})
+
 function filterObj(): QuizFilter {
-  // 选择题大类先展开为具体题型（单选 / 多选 / 不定项），再请求生成
+  // 选择题大类先展开为具体题型（单选 / 多选 / 不定项），再按条件抽题
   return { courseId: courseId.value, noteId: noteId.value, types: expandTypeGroups([...types.value]), difficulty: difficulty.value, count: count.value }
 }
 
-function startGenerate(force: boolean) {
+function startGenerate() {
   if (genState.value === 'generating') return
   clearTimers()
   genState.value = 'generating'
   progress.value = 0
   errorMsg.value = ''
-  fromCache.value = false
-  const hasCache = !force && !!getCachedQuiz(filterObj())
-  const duration = hasCache ? 600 : 1400 + Math.random() * 900
+  const startedAt = Date.now()
   progressTimer = window.setInterval(() => {
-    progress.value = Math.min(96, progress.value + (100 / duration) * 120)
+    progress.value = Math.min(96, progress.value + 4)
     genStep.value = GEN_STEPS[Math.min(GEN_STEPS.length - 1, Math.floor(progress.value / 26))] ?? GEN_STEPS[0]
   }, 120)
-  finishTimer = window.setTimeout(() => {
-    clearTimers()
-    // 演示：无缓存时约 12% 概率模拟生成失败，展示错误提示与重试按钮
-    if (!hasCache && Math.random() < 0.12) {
+
+  void (async () => {
+    try {
+      const f = filterObj()
+      await ensurePoolLoaded()
+      // 所选范围暂无题目时先调后端生成一批入库（已生成过则直接抽题，避免重复出题）
+      const hasForScope = pool.value.some((q) =>
+        f.noteId === 'all' ? q.course === f.courseId : q.noteId === f.noteId,
+      )
+      if (!hasForScope && !isGuest.value) {
+        const genNoteId =
+          f.noteId !== 'all'
+            ? f.noteId
+            : (notesOfCourse.value[0]?.id ?? '')
+        if (genNoteId) {
+          const items = await quizApi.generate(genNoteId, Math.max(f.count, 5))
+          const mapped = items.map(quizFromApi)
+          pool.value = [...pool.value, ...mapped.filter((m) => !pool.value.some((p) => p.id === m.id))]
+        }
+      }
+      const picked = pickQuestions(pool.value, f)
+      if (!picked.length) {
+        clearTimers()
+        genState.value = 'error'
+        errorMsg.value = '题库暂无可用题目，请先在「课堂纪要」完成一节课的纪要生成后再试'
+        return
+      }
+      // 进度动画至少走 800ms，观感完整
+      const elapsed = Date.now() - startedAt
+      if (elapsed < 800) await wait(800 - elapsed)
+      clearTimers()
+      loadSession(picked, 'normal')
+      genState.value = 'idle'
+    } catch (e) {
+      clearTimers()
       genState.value = 'error'
-      errorMsg.value = '题目生成超时，请稍后重试'
-      return
+      errorMsg.value = e instanceof ApiError ? e.message : '题目生成失败，请确认后端已启动'
     }
-    const res = generateQuiz(filterObj(), { force })
-    loadSession(res.questions, 'normal')
-    fromCache.value = res.fromCache
-    genState.value = 'idle'
-  }, duration)
+  })()
 }
 
 function clearTimers() {
@@ -176,10 +228,17 @@ function checkAnswer(q: QuizQuestion, my: string): boolean {
   if (mine === norm(q.answer)) return true
   return (q.accept ?? []).some((a) => norm(a) === mine)
 }
-/** 写入批改结果；错题重练模式下答错自动累计进错题本 */
+/** 写入批改结果；错题重练模式下答错即时入错题本，批改结果同步后端对账错题记录 */
 function applyGrade(q: QuizQuestion, right: boolean | null, my: string) {
   graded[q.id] = { right, my }
   if (sessionMode.value === 'wrongbook' && right === false) addToWrongBook(q, my)
+  // 批改结果同步后端（简答待自评除外）：答错由后端记录错题、重练答对自动移出，随后拉取对账
+  if (right !== null && !isGuest.value && Number.isFinite(Number(q.id))) {
+    void quizApi
+      .submit(Number(q.id), my)
+      .then(() => refreshWrongBook())
+      .catch(() => {})
+  }
 }
 function gradeOne(q: QuizQuestion) {
   if (graded[q.id]) return
@@ -450,9 +509,8 @@ function detailRemove() {
             </div>
           </div>
           <div class="gen-row">
-            <p v-if="fromCache" class="field-hint ok-hint"><AppIcon name="check" :size="13" /> 已使用上次生成的题目缓存，可在上方调整条件重新出题</p>
-            <p v-else class="field-hint">题目将基于所选课堂的纪要内容生成，每道题都标注来源出处</p>
-            <button class="btn btn-primary" type="button" :disabled="genState === 'generating'" @click="startGenerate(false)">
+            <p class="field-hint">题目基于所选课堂的纪要内容生成，作答后立即批改并同步错题本</p>
+            <button class="btn btn-primary" type="button" :disabled="genState === 'generating'" @click="startGenerate()">
               <AppIcon name="spark" :size="15" /> 生成题目
             </button>
           </div>
@@ -474,7 +532,7 @@ function detailRemove() {
             <div class="gs-title">题目生成失败</div>
             <p class="text-sm">{{ errorMsg }}（演示环境会随机模拟生成失败，可点击重试）</p>
           </div>
-          <button class="btn btn-primary" type="button" @click="startGenerate(false)">
+          <button class="btn btn-primary" type="button" @click="startGenerate()">
             <AppIcon name="refresh" :size="14" /> 重试
           </button>
         </section>
@@ -504,7 +562,7 @@ function detailRemove() {
             <div class="qp-meta">
               <span class="text-caption">已提交 {{ submittedCount }} / {{ questions.length }}</span>
               <span v-if="sessionMode === 'wrongbook'" class="tag tag-blue">错题重练</span>
-              <button v-else class="btn btn-secondary btn-sm" type="button" @click="startGenerate(true)">
+              <button v-else class="btn btn-secondary btn-sm" type="button" @click="startGenerate()">
                 <AppIcon name="refresh" :size="13" /> 重新生成题目
               </button>
             </div>
@@ -678,7 +736,7 @@ function detailRemove() {
             </div>
             <div class="bn-actions">
               <template v-if="sessionMode === 'normal'">
-                <button class="btn btn-primary" type="button" @click="startGenerate(true)">
+                <button class="btn btn-primary" type="button" @click="startGenerate()">
                   <AppIcon name="refresh" :size="14" /> 重新生成题目
                 </button>
               </template>

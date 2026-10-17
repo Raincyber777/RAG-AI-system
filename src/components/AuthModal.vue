@@ -1,17 +1,17 @@
 <script setup lang="ts">
 /**
  * 登录 / 注册 / 找回密码弹窗（着陆页与应用内共用）
- * 打开状态与模式由 store/auth 管理；演示环境提交即成功
+ * 打开状态与模式由 store/auth 管理；登录 / 注册走后端接口，失败在弹窗内提示
  * 应用内游客态打开弹窗时，登录成功后原地恢复完整权限
  */
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
-import { userProfile } from '@/store/study'
 import {
-  authModalOpen, authModalMode, closeAuth, loginSuccess, guestLogin,
-  matchAdminAccount, role, ADMIN_ORIGIN, DEMO_ACCOUNTS, type AuthMode, type DemoLoginAccount,
+  authModalOpen, authModalMode, closeAuth, guestLogin, login, register,
+  buildAdminSsoUrl, DEMO_ACCOUNTS, type AuthMode, type DemoLoginAccount,
 } from '@/store/auth'
+import { ApiError } from '@/api/http'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +26,13 @@ const email = ref('')
 const password = ref('')
 const agree = ref(false)
 const loading = ref(false)
+const errorMsg = ref('')
+
+// 敏感信息（手机号 / 密码）默认以「·」展示，点眼睛可查看真实内容
+const showLoginPhone = ref(false)
+const showLoginPwd = ref(false)
+const showRegPhone = ref(false)
+const showRegPwd = ref(false)
 
 // 找回密码（演示流程，支持手机号或邮箱）
 const forgotAccount = ref('')
@@ -34,33 +41,39 @@ const forgotSending = ref(false)
 
 function switchMode(m: AuthMode) {
   authModalMode.value = m
+  errorMsg.value = ''
   forgotSent.value = false
 }
 
-function submit() {
+/** 登录 / 注册成功后：管理员 / 超级管理员携带 token 进入管理端，普通用户进入用户端 */
+function afterAuthed(isAdmin: boolean) {
+  loading.value = false
+  if (isAdmin) {
+    window.location.href = buildAdminSsoUrl()
+    return
+  }
+  // 在着陆页打开的弹窗：登录 / 注册后进入应用；应用内则原地恢复完整权限
+  if (route.name === 'login') router.push('/studio')
+}
+
+async function submit() {
+  if (loading.value) return
+  errorMsg.value = ''
   loading.value = true
-  setTimeout(() => {
-    // 分权：管理员账号在用户端登录 → 先进入管理端（管理端通过 sso 参数免登）
-    if (authModalMode.value !== 'register') {
+  try {
+    if (authModalMode.value === 'register') {
+      await register({ name: username.value.trim(), phone: phone.value.trim(), email: email.value.trim(), password: password.value })
+      afterAuthed(false) // 注册账号固定为普通用户
+    } else {
       const id = loginType.value === 'email' ? email.value.trim() : phone.value.trim()
-      const admin = matchAdminAccount(id, password.value)
-      if (admin) {
-        loginSuccess({ name: admin.name })
-        role.value = admin.role
-        localStorage.setItem('zy_role', admin.role)
-        userProfile.name = admin.name
-        userProfile.email = admin.email
-        loading.value = false
-        window.location.href =
-          `${ADMIN_ORIGIN}/?sso=1&n=${encodeURIComponent(admin.name)}&e=${encodeURIComponent(admin.email)}&r=${admin.role}`
-        return
-      }
+      const payload = await login(id, password.value)
+      // 分权：管理员账号在用户端登录 → 先进入管理端（管理端通过 sso 参数免登）
+      afterAuthed(payload.user.role !== 'user')
     }
-    loginSuccess({ register: authModalMode.value === 'register', name: username.value || '林小智' })
+  } catch (e) {
+    errorMsg.value = e instanceof ApiError ? e.message : '网络异常，请稍后再试'
     loading.value = false
-    // 在着陆页打开的弹窗：登录 / 注册后进入应用；应用内则原地恢复完整权限
-    if (route.name === 'login') router.push('/studio')
-  }, 600)
+  }
 }
 
 /** 演示账号一键填入：切换为邮箱登录并写入邮箱与密码 */
@@ -92,6 +105,7 @@ watch(authModalOpen, (v) => {
   document.body.style.overflow = v ? 'hidden' : ''
   if (v) {
     forgotSent.value = false
+    errorMsg.value = ''
     window.addEventListener('keydown', onEscKey)
   } else {
     window.removeEventListener('keydown', onEscKey)
@@ -105,7 +119,8 @@ onBeforeUnmount(() => {
 
 <template>
   <Transition name="modal">
-    <div v-if="authModalOpen" class="mask" data-guest-allow @click.self="closeAuth">
+    <!-- 根类名用 auth-mask：避开 AppLayout 作用域的 .mask { display:none }（Vue 会把父组件作用域属性传给子组件根节点，导致弹窗被隐藏） -->
+    <div v-if="authModalOpen" class="auth-mask" data-guest-allow @click.self="closeAuth">
       <div class="auth-card" role="dialog" aria-modal="true" aria-label="登录或注册">
         <button class="auth-x" aria-label="关闭弹窗" @click="closeAuth"><AppIcon name="x" :size="15" /></button>
 
@@ -127,6 +142,8 @@ onBeforeUnmount(() => {
           <button class="seg-tab" :class="{ active: authModalMode === 'register' }" @click="switchMode('register')">注册</button>
         </div>
 
+        <div v-if="errorMsg" class="error-box" role="alert">{{ errorMsg }}</div>
+
         <Transition name="form-fade" mode="out-in">
           <!-- 登录 -->
           <form v-if="authModalMode === 'login'" key="login" @submit.prevent="submit">
@@ -141,12 +158,26 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="field">
               <label class="field-label" for="login-phone">手机号</label>
-              <input id="login-phone" v-model="phone" class="input" type="tel" inputmode="numeric" placeholder="请输入 11 位手机号" required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号" />
+              <div class="secret-wrap">
+                <input
+                  id="login-phone" v-model="phone" class="input" type="text" inputmode="numeric"
+                  :class="{ 'text-masked': !showLoginPhone }" placeholder="请输入 11 位手机号"
+                  required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号"
+                />
+                <button type="button" class="eye-btn" :aria-label="showLoginPhone ? '隐藏手机号' : '显示手机号'" @click="showLoginPhone = !showLoginPhone">
+                  <AppIcon :name="showLoginPhone ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
 
             <div class="field">
               <label class="field-label" for="login-pwd">密码</label>
-              <input id="login-pwd" v-model="password" class="input" type="password" placeholder="请输入密码" required minlength="6" />
+              <div class="secret-wrap">
+                <input id="login-pwd" v-model="password" class="input" :type="showLoginPwd ? 'text' : 'password'" placeholder="请输入密码" required minlength="6" />
+                <button type="button" class="eye-btn" :aria-label="showLoginPwd ? '隐藏密码' : '显示密码'" @click="showLoginPwd = !showLoginPwd">
+                  <AppIcon :name="showLoginPwd ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
 
             <div class="aux-row">
@@ -181,7 +212,16 @@ onBeforeUnmount(() => {
             </div>
             <div class="field">
               <label class="field-label" for="reg-phone">手机号</label>
-              <input id="reg-phone" v-model="phone" class="input" type="tel" inputmode="numeric" placeholder="11 位手机号" required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号" />
+              <div class="secret-wrap">
+                <input
+                  id="reg-phone" v-model="phone" class="input" type="text" inputmode="numeric"
+                  :class="{ 'text-masked': !showRegPhone }" placeholder="11 位手机号"
+                  required pattern="1[3-9]\d{9}" maxlength="11" title="请输入 11 位手机号"
+                />
+                <button type="button" class="eye-btn" :aria-label="showRegPhone ? '隐藏手机号' : '显示手机号'" @click="showRegPhone = !showRegPhone">
+                  <AppIcon :name="showRegPhone ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
             <div class="field">
               <label class="field-label" for="reg-email">邮箱</label>
@@ -189,7 +229,12 @@ onBeforeUnmount(() => {
             </div>
             <div class="field">
               <label class="field-label" for="reg-pwd">密码</label>
-              <input id="reg-pwd" v-model="password" class="input" type="password" placeholder="至少 6 位密码" required minlength="6" />
+              <div class="secret-wrap">
+                <input id="reg-pwd" v-model="password" class="input" :type="showRegPwd ? 'text' : 'password'" placeholder="至少 6 位密码" required minlength="6" />
+                <button type="button" class="eye-btn" :aria-label="showRegPwd ? '隐藏密码' : '显示密码'" @click="showRegPwd = !showRegPwd">
+                  <AppIcon :name="showRegPwd ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
             <label class="agree-row">
               <input v-model="agree" type="checkbox" />
@@ -245,7 +290,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mask {
+.auth-mask {
   position: fixed; inset: 0; z-index: 100;
   background: rgba(10, 21, 48, 0.45); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
   display: flex; padding: 20px; overflow-y: auto;
@@ -271,6 +316,18 @@ onBeforeUnmount(() => {
 .modal-enter-from .auth-card, .modal-leave-to .auth-card { transform: translateY(10px) scale(0.98); }
 
 /* 表单细节 */
+/* 敏感信息输入框：手机号 / 密码默认以「·」展示，右侧眼睛切换明文 */
+.secret-wrap { position: relative; }
+.secret-wrap .input { padding-right: 40px; }
+/* Chromium 系列生效的文本打点（type=text 但视觉上等价密码框） */
+.text-masked { -webkit-text-security: disc; }
+.eye-btn {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; border-radius: var(--radius-sm);
+  color: var(--stone); cursor: pointer; transition: color 0.15s ease, background 0.15s ease;
+}
+.eye-btn:hover { color: var(--ink); background: var(--surface-soft); }
 .type-tabs {
   display: flex; gap: 6px; margin-bottom: 18px;
   background: var(--surface-soft); padding: 4px; border-radius: 10px;
@@ -292,6 +349,12 @@ onBeforeUnmount(() => {
   line-height: 1.6; cursor: pointer; user-select: none;
 }
 .agree-row input[type='checkbox'] { width: 15px; height: 15px; margin-top: 2px; accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
+/* 登录 / 注册失败提示（后端返回的错误信息） */
+.error-box {
+  background: var(--tint-rose); color: var(--error);
+  font-size: 13px; font-weight: 500; line-height: 1.5;
+  border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 14px;
+}
 .forgot-tip {
   display: flex; align-items: center; gap: 8px;
   background: var(--tint-sky); color: var(--link-blue);

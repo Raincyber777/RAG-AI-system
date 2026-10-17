@@ -9,7 +9,9 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
-import { addClassNote, findNote, courseList, addCourse, classNotes, removeCourse, renameCourse } from '@/store/study'
+import { addClassNote, findNote, courseList, addCourse, classNotes, removeCourse, renameCourse, ensureNotesLoaded, noteFromApi } from '@/store/study'
+import { notesApi, type ApiNote } from '@/api'
+import { ApiError } from '@/api/http'
 import { wrongBook } from '@/store/quiz'
 import type { ClassNote } from '@/mock/data'
 import { buildNoteMarkdown, downloadText } from '@/utils/exportNote'
@@ -33,6 +35,7 @@ interface InputFile {
   kind: FileKind
   size: string
   preview?: string
+  file?: File // 原始文件（创建纪要时随表单提交给后端）
 }
 
 const KIND_META = UPLOAD_KIND_META
@@ -83,7 +86,7 @@ function askDeleteCourse(name: string) {
 }
 function confirmDeleteCourse() {
   const name = deleteCourseTarget.value
-  if (name) removeCourse(name)
+  if (name) void removeCourse(name).catch(() => flashZoneTip('删除课程失败，请确认后端已启动'))
   if (courseName.value === name) courseName.value = ''
   deleteCourseTarget.value = ''
 }
@@ -105,16 +108,21 @@ function closeRenameCourse() {
   renameCourseTarget.value = ''
   renameError.value = ''
 }
-function confirmRenameCourse() {
+async function confirmRenameCourse() {
   const name = renameValue.value.trim()
   if (!name) { renameError.value = '请输入课程名称'; return }
   if (name !== renameCourseTarget.value && courseList.value.includes(name)) {
     renameError.value = '该课程名已存在'
     return
   }
-  renameCourse(renameCourseTarget.value, name)
-  if (courseName.value === renameCourseTarget.value) courseName.value = name
-  closeRenameCourse()
+  try {
+    const ok = await renameCourse(renameCourseTarget.value, name)
+    if (!ok) { renameError.value = '该课程名已存在'; return }
+    if (courseName.value === renameCourseTarget.value) courseName.value = name
+    closeRenameCourse()
+  } catch {
+    renameError.value = '重命名失败，请确认后端已启动'
+  }
 }
 
 // 上传格式提示（i 图标悬停展示）：直接取自统一格式注册表，与真实过滤规则保持一致
@@ -166,6 +174,7 @@ function handleFiles(list: FileList | null | undefined) {
       name: f.name,
       kind,
       size: formatFileSize(f.size),
+      file: f,
     }
     if (kind === 'image') item.preview = URL.createObjectURL(f)
     inputFiles.value.push(item)
@@ -293,41 +302,9 @@ function sectionVisible(key: SectionKey) {
   return headersShown.value.includes(key) && sectionCount(key) > 0
 }
 
-// 演示纪要内容（接入真实模型后由融合生成接口返回）
-function makeDemoNote(title: string, course: string, files: InputFile[]): ClassNote {
-  const kinds = new Set(files.map((f) => f.kind))
-  const visualCount = files.filter((f) => f.kind === 'image' || f.kind === 'ppt').length
-  const duration = kinds.has('audio') ? '录音 45 分钟' : kinds.has('video') ? '视频 12 分钟' : visualCount > 0 ? `图片 ${visualCount} 张` : '讲义 2 份'
-  const keyframes = kinds.has('video') ? 9 : visualCount > 0 ? Math.min(12, Math.max(4, visualCount * 2)) : 0
-  return {
-    id: 'n' + Date.now(),
-    title,
-    course: course || '未命名课程',
-    date: new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'),
-    duration,
-    keyframes,
-    chunkCount: 18 + files.length * 5,
-    questions: 0,
-    status: 'done',
-    theme:
-      '本节课围绕泰勒公式与泰勒级数展开。教师首先回顾了麦克劳林公式，推导了常用函数（e^x、sin x、cos x）的展开式，随后讲解了拉格朗日余项与佩亚诺余项的区别与选用场景，最后通过三道例题演示了利用泰勒展开求极限与证明不等式的方法。',
-    points: [
-      { text: '泰勒公式：f(x) 在 x₀ 处 n 阶可导，可用多项式逼近，余项刻画逼近误差', cite: '录音 03:24' },
-      { text: '麦克劳林公式是 x₀ = 0 的特殊情形，e^x = 1 + x + x²/2! + …', cite: 'PPT 第2页' },
-      { text: '拉格朗日余项适合定性估计误差，佩亚诺余项适合求极限时的局部展开', cite: '录音 11:47' },
-      { text: '利用泰勒展开求极限的关键：确定展开到几阶，让"余项 o(xⁿ)"可以忽略', cite: '录音 18:05' },
-      { text: 'sin x 与 cos x 的展开只含奇/偶次幂，利用奇偶性可减少计算量', cite: 'PPT 第5页' },
-    ],
-    definitions: [
-      { term: '泰勒公式', detail: 'f(x) = Σ f⁽ⁿ⁾(x₀)/n! · (x-x₀)ⁿ + Rₙ(x)，其中 Rₙ 为余项', cite: 'PPT 第3页' },
-      { term: '拉格朗日余项', detail: 'Rₙ(x) = f⁽ⁿ⁺¹⁾(ξ)/(n+1)! · (x-x₀)ⁿ⁺¹，ξ 介于 x₀ 与 x 之间' },
-    ],
-    emphasized: [
-      '期末必考：用泰勒展开求 undefined 型极限，至少展开到分母的最高阶',
-      '记住 e^x、sin x、cos x、ln(1+x)、(1+x)^α 五个基础展开式即可推导其余',
-    ],
-  }
-}
+// ---------- 生成请求：动画进行的同时把材料提交给后端，返回完整纪要后进入流式渲染 ----------
+let createPromise: Promise<ApiNote> | null = null
+const genError = ref('')
 
 // ---------- 流程控制 ----------
 const stepTimers: number[] = []
@@ -351,7 +328,7 @@ function runSteps() {
     if (i >= preCount) {
       const fuse = list[list.length - 2]
       if (fuse) fuse.status = 'running'
-      startStreaming()
+      tryBeginStreaming()
       return
     }
     const step = list[i]
@@ -373,6 +350,12 @@ function runSteps() {
 // 逐条浮现计划：header → items 依序出现
 type PlanItem = { sec: SectionKey; kind: 'header' | 'item'; idx: number }
 let plan: PlanItem[] = []
+
+/** 前置步骤与后端生成请求都就绪后进入流式渲染（两者到达顺序不定，后到者触发） */
+function tryBeginStreaming() {
+  if (genState.value !== 'running' || !note.value) return
+  startStreaming()
+}
 
 function startStreaming() {
   const n = note.value
@@ -446,9 +429,9 @@ function completeGeneration() {
   const n = note.value
   if (n) {
     // 保存到共享 store（我的纪要 / 追问侧边栏同步可见）
-    const saved = addClassNote({ ...n, status: 'done' })
-    savedId.value = saved.id
-    updateNoteRef(saved.id)
+    addClassNote(n)
+    savedId.value = n.id
+    updateNoteRef(n.id)
   }
 }
 
@@ -465,9 +448,30 @@ function startGenerate() {
   for (const k of Object.keys(itemsShown)) itemsShown[k] = 0
   plan = []
   savedId.value = null
-  note.value = makeDemoNote(classTitle.value.trim(), courseName.value.trim(), inputFiles.value)
+  note.value = null
+  genError.value = ''
   steps.value = buildSteps(inputFiles.value)
   genState.value = 'running'
+
+  // 材料随表单提交给后端创建纪要（内容暂由占位流水线生成）；返回完整纪要后进入流式渲染
+  const primary = inputFiles.value.find((f) => f.file)?.file
+  createPromise = notesApi.create(
+    { course: courseName.value.trim(), title: classTitle.value.trim(), duration: '' },
+    primary,
+  )
+  createPromise.then(
+    (apiNote) => {
+      if (genState.value !== 'running') return // 用户已停止 / 重置
+      note.value = noteFromApi(apiNote)
+      tryBeginStreaming()
+    },
+    (e: unknown) => {
+      if (genState.value !== 'running') return
+      clearAllTimers()
+      genState.value = 'stopped'
+      genError.value = e instanceof ApiError ? e.message : '生成请求失败，请确认后端已启动'
+    },
+  )
   runSteps()
 }
 
@@ -485,6 +489,7 @@ function resetAll() {
   note.value = null
   savedId.value = null
   steps.value = []
+  genError.value = ''
   themeShown.value = ''
   headersShown.value = []
   for (const k of Object.keys(itemsShown)) itemsShown[k] = 0
@@ -523,7 +528,8 @@ function goQA() {
 }
 
 // ---------- 回看已有纪要（/studio?note=id） ----------
-onMounted(() => {
+onMounted(async () => {
+  await ensureNotesLoaded() // 纪要列表来自后端，异步加载完成后才能定位回看目标
   const id = route.query.note
   const exists = findNote(typeof id === 'string' ? id : null)
   if (exists) {
@@ -739,6 +745,7 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-if="note" class="text-caption">{{ note.course }} · {{ note.duration }}</span>
               </div>
+              <div v-if="genError" class="gen-error" role="alert">{{ genError }}</div>
             </div>
             <div v-if="genState === 'done' && note" class="flex gap-xs">
               <button class="btn btn-secondary btn-sm" @click="exportNote"><AppIcon name="download" :size="14" /> 导出 Markdown</button>
@@ -1037,6 +1044,12 @@ onBeforeUnmount(() => {
 .note-head { display: flex; align-items: flex-start; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--hairline-soft); }
 .note-title { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
 .note-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+/* 生成请求失败提示（后端不可达 / 校验失败等） */
+.gen-error {
+  margin-top: 8px; font-size: 12.5px; font-weight: 500; line-height: 1.5;
+  background: var(--tint-rose); color: var(--error);
+  border-radius: var(--radius-md); padding: 8px 12px;
+}
 
 .note-empty { text-align: center; padding: 56px 20px; color: var(--stone); }
 .note-empty-icon {

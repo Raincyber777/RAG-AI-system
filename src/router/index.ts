@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { userProfile } from '@/store/study'
+import { acceptUserSso, remoteLogoutCleanup } from '@/store/auth'
 
 /**
  * 用户端路由表 — 智学纪要 · 多模态课堂知识助手
@@ -76,24 +76,28 @@ const router = createRouter({
   ],
 })
 
-// 简易登录守卫：无 token 时跳转登录页
+// 登录守卫：管理端「进入用户端」携带 sso（含 JWT）时先建立会话；游客可浏览，未登录跳转登录页
 router.beforeEach((to) => {
-  // 管理端「进入用户端」携带 sso：无登录态时按管理员身份接入（演示 SSO），并去除参数重入
-  if (to.query.sso === '1' && !localStorage.getItem('zy_token')) {
-    localStorage.setItem('zy_token', 'demo-token')
-    localStorage.setItem('zy_role', 'admin')
-    const n = to.query.n
-    const e = to.query.e
-    if (typeof n === 'string' && n) {
-      localStorage.setItem('zy_user', n)
-      userProfile.name = n
-    }
-    if (typeof e === 'string' && e) userProfile.email = e
-    return { path: to.path, replace: true }
+  // 管理端退出登录跳回（?logout=1）：先清空本端登录态（避免残留会话把首页重定向进应用），落到首页
+  if (to.query.logout === '1') {
+    remoteLogoutCleanup()
+    return { name: 'login', query: {} }
   }
-  const token = localStorage.getItem('zy_token')
-  if (!token && to.name !== 'login') return { name: 'login' }
-  if (token && to.name === 'login') return { name: 'studio' }
+  if (to.query.sso === '1' && !localStorage.getItem('zy_token')) {
+    const q = to.query
+    const ok = acceptUserSso({
+      n: typeof q.n === 'string' ? q.n : undefined,
+      e: typeof q.e === 'string' ? q.e : undefined,
+      r: typeof q.r === 'string' ? q.r : undefined,
+      t: typeof q.t === 'string' ? q.t : undefined,
+      rt: typeof q.rt === 'string' ? q.rt : undefined,
+    })
+    // 去除参数重入；缺 token 的无效 sso 按未登录处理
+    return ok ? { path: to.path, replace: true } : { name: 'login' }
+  }
+  const authed = !!localStorage.getItem('zy_token') || !!localStorage.getItem('zy_guest')
+  if (!authed && to.name !== 'login') return { name: 'login' }
+  if (authed && to.name === 'login') return { name: 'studio' }
   return true
 })
 

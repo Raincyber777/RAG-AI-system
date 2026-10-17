@@ -1,36 +1,45 @@
 <script setup lang="ts">
 /**
  * 个人设置：资料 / 手机号 / 邮箱 / 头像 / 密码
+ * 修改统一走后端 /auth/me/ 与 /auth/password/；手机号 / 邮箱的短信验证码为演示流程（123456）
  * 转写、抽帧、纪要生成与问答参数统一采用系统最佳配置，不提供用户侧调整
  */
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { userProfile } from '@/store/study'
-import { isGuest, openAuth } from '@/store/auth'
+import { isGuest, openAuth, updateCurrentUser } from '@/store/auth'
+import { authApi } from '@/api'
+import { ApiError } from '@/api/http'
 import { UPLOAD_ACCEPT, isSupportedImage } from '@/utils/uploadFormats'
 
-// ---------- 个人资料（userProfile 为共享状态，侧边栏用户卡片实时同步） ----------
+// ---------- 个人资料（保存后经 updateCurrentUser 同步会话与共享资料） ----------
 const nameInput = ref(userProfile.name)
 const savedProfile = ref(false)
 const showSaveConfirm = ref(false)
 function saveProfile() {
   showSaveConfirm.value = true
 }
-function confirmSave() {
-  userProfile.name = nameInput.value.trim() || userProfile.name
+async function confirmSave() {
+  const name = nameInput.value.trim() || userProfile.name
   showSaveConfirm.value = false
-  savedProfile.value = true
-  setTimeout(() => (savedProfile.value = false), 1800)
+  try {
+    const u = await authApi.updateMe({ name })
+    updateCurrentUser(u)
+    savedProfile.value = true
+    setTimeout(() => (savedProfile.value = false), 1800)
+  } catch (e) {
+    showAvatarTip(e instanceof ApiError ? e.message : '保存失败，请确认后端已启动')
+  }
 }
 
-// 头像上传（演示：本地预览；接入后端后替换为上传接口并保存返回的 URL）
+// 头像上传（选择后直接上传到后端，返回的媒体地址同步到共享资料）
 const avatarInput = ref<HTMLInputElement>()
 const avatarTip = ref('')
 let avatarTipTimer: number | null = null
 function pickAvatar() {
   avatarInput.value?.click()
 }
-function onAvatarChange(e: Event) {
+async function onAvatarChange(e: Event) {
   const input = e.target as HTMLInputElement
   const f = input.files?.[0]
   input.value = ''
@@ -43,9 +52,13 @@ function onAvatarChange(e: Event) {
     showAvatarTip('图片大小不能超过 5MB')
     return
   }
-  if (userProfile.avatar) URL.revokeObjectURL(userProfile.avatar)
-  userProfile.avatar = URL.createObjectURL(f)
-  showAvatarTip('头像已更新')
+  try {
+    const u = await authApi.updateAvatar(f)
+    updateCurrentUser(u)
+    showAvatarTip('头像已更新')
+  } catch (err) {
+    showAvatarTip(err instanceof ApiError ? err.message : '头像上传失败，请确认后端已启动')
+  }
 }
 function showAvatarTip(t: string) {
   avatarTip.value = t
@@ -53,13 +66,10 @@ function showAvatarTip(t: string) {
   avatarTipTimer = window.setTimeout(() => (avatarTip.value = ''), 2600)
 }
 
-// ---------- 手机号 / 邮箱更换（验证码 60s 一次，演示验证码 123456） ----------
+// ---------- 手机号 / 邮箱更换（短信验证码为演示流程；更换请求由后端校验占用） ----------
 const PHONE_RE = /^1[3-9]\d{9}$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const DEMO_CODE = '123456'
-// 模拟已被其他账号绑定的手机号 / 邮箱（接入后端后由接口校验）
-const takenPhones = ['13800138000', '13900000000']
-const takenEmails = ['demo@zhiyuan.ai', 'test@163.com']
 
 function maskPhone(p: string) {
   return p.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')
@@ -73,6 +83,13 @@ const phone = reactive({ changing: false, value: '', code: '', error: '', sent: 
 const email = reactive({ changing: false, value: '', code: '', error: '', sent: '', done: false })
 const cooldowns = reactive({ phone: 0, email: 0 })
 const timers: Record<'phone' | 'email', number> = { phone: 0, email: 0 }
+
+// 敏感信息默认以「·」展示，点眼睛查看真实内容
+const showPhone = ref(false)
+const showNewPhone = ref(false)
+const showPwdOld = ref(false)
+const showPwdNew = ref(false)
+const showPwdConfirm = ref(false)
 
 // 输入时实时校验提示（不等提交才报错）
 const phoneMsg = computed(() => {
@@ -109,18 +126,22 @@ function sendPhoneCode() {
   if (!v) { phone.error = '请输入 11 位手机号'; return }
   if (!PHONE_RE.test(v)) { phone.error = '手机号格式不正确'; return }
   if (v === userProfile.phone) { phone.error = '新手机号与当前手机号相同'; return }
-  if (takenPhones.includes(v)) { phone.error = '该手机号已绑定其他账号'; return }
   startCooldown('phone')
   phone.sent = `验证码已发送至 ${maskPhone(v)}（演示验证码：${DEMO_CODE}）`
 }
-function confirmPhone() {
+async function confirmPhone() {
   phone.error = ''
   if (!/^\d{6}$/.test(phone.code)) { phone.error = '请输入 6 位数字验证码'; return }
   if (phone.code !== DEMO_CODE) { phone.error = '验证码不正确，请重新输入'; return }
-  userProfile.phone = phone.value.trim()
-  cancelPhone()
-  phone.done = true
-  setTimeout(() => (phone.done = false), 2600)
+  try {
+    const u = await authApi.updateMe({ phone: phone.value.trim() })
+    updateCurrentUser(u)
+    cancelPhone()
+    phone.done = true
+    setTimeout(() => (phone.done = false), 2600)
+  } catch (e) {
+    phone.error = e instanceof ApiError ? e.message : '更换失败，请确认后端已启动'
+  }
 }
 function cancelPhone() {
   Object.assign(phone, { changing: false, value: '', code: '', error: '', sent: '' })
@@ -136,18 +157,22 @@ function sendEmailCode() {
   if (!v) { email.error = '请输入邮箱地址'; return }
   if (!EMAIL_RE.test(v)) { email.error = '邮箱格式不正确'; return }
   if (v === userProfile.email) { email.error = '新邮箱与当前邮箱相同'; return }
-  if (takenEmails.includes(v)) { email.error = '该邮箱已绑定其他账号'; return }
   startCooldown('email')
   email.sent = `验证码已发送至原邮箱 ${maskEmail(userProfile.email)}（演示验证码：${DEMO_CODE}）`
 }
-function confirmEmail() {
+async function confirmEmail() {
   email.error = ''
   if (!/^\d{6}$/.test(email.code)) { email.error = '请输入 6 位数字验证码'; return }
   if (email.code !== DEMO_CODE) { email.error = '验证码不正确，请重新输入'; return }
-  userProfile.email = email.value.trim()
-  cancelEmail()
-  email.done = true
-  setTimeout(() => (email.done = false), 2600)
+  try {
+    const u = await authApi.updateMe({ email: email.value.trim() })
+    updateCurrentUser(u)
+    cancelEmail()
+    email.done = true
+    setTimeout(() => (email.done = false), 2600)
+  } catch (e) {
+    email.error = e instanceof ApiError ? e.message : '更换失败，请确认后端已启动'
+  }
 }
 function cancelEmail() {
   Object.assign(email, { changing: false, value: '', code: '', error: '', sent: '' })
@@ -160,19 +185,29 @@ onBeforeUnmount(() => {
   if (avatarTipTimer) window.clearTimeout(avatarTipTimer)
 })
 
-// 修改密码（演示：前端校验通过即提示成功，接入后端后替换为修改密码接口）
+// 修改密码（前端预校验后调用后端修改接口，旧密码校验由后端完成）
 const pwdForm = reactive({ old: '', next: '', confirm: '', error: '' })
 const savedPwd = ref(false)
-function updatePassword() {
+const pwdBusy = ref(false)
+async function updatePassword() {
   pwdForm.error = ''
   if (!pwdForm.old) { pwdForm.error = '请输入当前密码'; return }
   if (pwdForm.next.length < 8) { pwdForm.error = '新密码至少需要 8 位'; return }
   if (pwdForm.next === pwdForm.old) { pwdForm.error = '新密码不能与当前密码相同'; return }
   if (!pwdForm.confirm) { pwdForm.error = '请再次输入新密码'; return }
   if (pwdForm.confirm !== pwdForm.next) { pwdForm.error = '两次输入的新密码不一致'; return }
-  Object.assign(pwdForm, { old: '', next: '', confirm: '' })
-  savedPwd.value = true
-  setTimeout(() => (savedPwd.value = false), 1800)
+  if (pwdBusy.value) return
+  pwdBusy.value = true
+  try {
+    await authApi.changePassword(pwdForm.old, pwdForm.next)
+    Object.assign(pwdForm, { old: '', next: '', confirm: '' })
+    savedPwd.value = true
+    setTimeout(() => (savedPwd.value = false), 1800)
+  } catch (e) {
+    pwdForm.error = e instanceof ApiError ? e.message : '密码修改失败，请确认后端已启动'
+  } finally {
+    pwdBusy.value = false
+  }
 }
 
 </script>
@@ -233,18 +268,32 @@ function updatePassword() {
           <div class="field">
             <label class="field-label">电话号码</label>
             <div v-if="!phone.changing" class="locked-row">
-              <input class="input input-locked" :value="maskPhone(userProfile.phone)" readonly aria-label="当前手机号（中间四位已隐藏）" />
+              <div class="secret-wrap flex-1">
+                <input
+                  class="input input-locked" :value="showPhone ? userProfile.phone : userProfile.phone.replace(/./g, '·')"
+                  readonly aria-label="当前手机号（点眼睛查看）"
+                />
+                <button type="button" class="eye-btn" :aria-label="showPhone ? '隐藏手机号' : '显示手机号'" @click="showPhone = !showPhone">
+                  <AppIcon :name="showPhone ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
               <button class="btn btn-secondary change-btn" @click="startPhone">更换</button>
             </div>
             <div v-else class="change-panel">
-              <input
-                v-model="phone.value"
-                class="input"
-                placeholder="请输入新手机号"
-                maxlength="11"
-                inputmode="numeric"
-                @input="phone.error = ''"
-              />
+              <div class="secret-wrap">
+                <input
+                  v-model="phone.value"
+                  class="input"
+                  :class="{ 'text-masked': !showNewPhone }"
+                  placeholder="请输入新手机号"
+                  maxlength="11"
+                  inputmode="numeric"
+                  @input="phone.error = ''"
+                />
+                <button type="button" class="eye-btn" :aria-label="showNewPhone ? '隐藏新手机号' : '显示新手机号'" @click="showNewPhone = !showNewPhone">
+                  <AppIcon :name="showNewPhone ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
               <p class="field-hint" :class="phone.error || !phoneMsg.ok ? 'hint-err' : 'hint-ok'">
                 {{ phone.error || phoneMsg.text }}
               </p>
@@ -307,16 +356,31 @@ function updatePassword() {
             <div class="h4 mb-sm"><AppIcon name="lock" :size="15" /> 修改密码</div>
             <div class="field">
               <label class="field-label">当前密码</label>
-              <input v-model="pwdForm.old" class="input" type="password" placeholder="请输入当前密码" autocomplete="current-password" />
+              <div class="secret-wrap">
+                <input v-model="pwdForm.old" class="input" :type="showPwdOld ? 'text' : 'password'" placeholder="请输入当前密码" autocomplete="current-password" />
+                <button type="button" class="eye-btn" :aria-label="showPwdOld ? '隐藏当前密码' : '显示当前密码'" @click="showPwdOld = !showPwdOld">
+                  <AppIcon :name="showPwdOld ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
             <div class="field">
               <label class="field-label">新密码</label>
-              <input v-model="pwdForm.next" class="input" type="password" placeholder="请输入新密码" autocomplete="new-password" />
+              <div class="secret-wrap">
+                <input v-model="pwdForm.next" class="input" :type="showPwdNew ? 'text' : 'password'" placeholder="请输入新密码" autocomplete="new-password" />
+                <button type="button" class="eye-btn" :aria-label="showPwdNew ? '隐藏新密码' : '显示新密码'" @click="showPwdNew = !showPwdNew">
+                  <AppIcon :name="showPwdNew ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
               <p class="field-hint">至少 8 位，建议包含字母、数字与符号</p>
             </div>
             <div class="field">
               <label class="field-label">确认新密码</label>
-              <input v-model="pwdForm.confirm" class="input" type="password" placeholder="请再次输入新密码" autocomplete="new-password" @input="pwdForm.error = ''" />
+              <div class="secret-wrap">
+                <input v-model="pwdForm.confirm" class="input" :type="showPwdConfirm ? 'text' : 'password'" placeholder="请再次输入新密码" autocomplete="new-password" @input="pwdForm.error = ''" />
+                <button type="button" class="eye-btn" :aria-label="showPwdConfirm ? '隐藏确认密码' : '显示确认密码'" @click="showPwdConfirm = !showPwdConfirm">
+                  <AppIcon :name="showPwdConfirm ? 'eye-off' : 'eye'" :size="15" />
+                </button>
+              </div>
             </div>
             <p v-if="pwdForm.error" class="field-hint hint-err">{{ pwdForm.error }}</p>
             <button class="btn btn-primary" @click="updatePassword">
@@ -382,7 +446,20 @@ function updatePassword() {
 .avatar-edit:hover .avatar-mask, .avatar-edit:focus-visible .avatar-mask { opacity: 1; }
 .avatar-tip { font-size: 12px; color: var(--brand-green); margin: -8px 0 12px; }
 .locked-row { display: flex; align-items: center; gap: 8px; }
+.locked-row .secret-wrap { flex: 1; min-width: 0; }
 .input-locked { background: var(--surface-soft); color: var(--steel); cursor: not-allowed; }
+/* 敏感信息输入框：手机号 / 密码默认以「·」展示，右侧眼睛切换明文 */
+.secret-wrap { position: relative; }
+.secret-wrap .input { padding-right: 40px; }
+/* Chromium 系列生效的文本打点（type=text 但视觉上等价密码框） */
+.text-masked { -webkit-text-security: disc; }
+.eye-btn {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; border-radius: var(--radius-sm);
+  color: var(--stone); cursor: pointer; transition: color 0.15s ease, background 0.15s ease;
+}
+.eye-btn:hover { color: var(--ink); background: var(--surface-soft); }
 .change-btn { flex-shrink: 0; }
 .change-panel {
   border: 1px solid var(--hairline); border-radius: var(--radius-md);

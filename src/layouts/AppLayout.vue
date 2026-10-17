@@ -2,15 +2,16 @@
 /**
  * 全局布局：左侧导航栏 + 右侧内容区
  * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 自创题练习 / 数据看板 / 个人设置 / 问题反馈 / 使用说明
- * 游客模式：主内容区只读 —— 点击按钮 / 输入 / 拖拽上传等交互统一弹出登录弹窗；
+ * 游客模式：主内容区只读 —— 点击按钮 / 输入 / 拖拽上传等交互统一弹出「登录后即可使用」提示（可去登录 / 去注册）；
  * 侧边栏导航（查看各页面）与退出登录不受限制
  */
 import { useRouter, useRoute } from 'vue-router'
 import { ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AuthModal from '@/components/AuthModal.vue'
+import GuestHintModal from '@/components/GuestHintModal.vue'
 import { userProfile } from '@/store/study'
-import { isGuest, role, logout as authLogout, openAuth } from '@/store/auth'
+import { isGuest, role, logout as authLogout, showGuestHint, buildAdminSsoUrl } from '@/store/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -39,6 +40,12 @@ function handleLogout() {
   router.push('/login')
 }
 
+/** 返回管理端（管理员 / 超级管理员）：携带登录态 SSO 跳回管理端工作台 */
+function backToAdmin() {
+  sidebarOpen.value = false
+  window.location.href = buildAdminSsoUrl()
+}
+
 /* ---------- 游客模式守卫：拦截主内容区的交互，统一弹出登录 ---------- */
 const INTERACTIVE = 'button, input, textarea, select, label, a[href], [role="button"], [tabindex="0"]'
 function guestAllowed(t: HTMLElement) {
@@ -50,7 +57,8 @@ function guestClick(e: MouseEvent) {
   if (!t || guestAllowed(t) || !t.closest(INTERACTIVE)) return
   e.preventDefault()
   e.stopPropagation()
-  openAuth('login')
+  // 先弹「登录后即可使用」提示（含 × / 去登录 / 去注册），由用户选择再进登录或注册表单
+  showGuestHint()
 }
 function guestMouseDown(e: MouseEvent) {
   if (!isGuest.value) return
@@ -68,7 +76,7 @@ function guestDrop(e: DragEvent) {
   if (!isGuest.value) return
   e.preventDefault()
   e.stopPropagation()
-  openAuth('login')
+  showGuestHint()
 }
 </script>
 
@@ -118,6 +126,15 @@ function guestDrop(e: DragEvent) {
           <AppIcon :name="n.icon" :size="17" />
           <span>{{ n.label }}</span>
         </router-link>
+
+        <!-- 管理员 / 超级管理员：返回管理端入口（携带登录态 SSO 跳转） -->
+        <template v-if="!isGuest && role !== 'user'">
+          <div class="nav-divider"></div>
+          <button class="nav-item nav-admin" @click="backToAdmin">
+            <AppIcon name="shield" :size="17" />
+            <span>返回管理端</span>
+          </button>
+        </template>
       </nav>
 
       <div class="sidebar-footer">
@@ -136,10 +153,7 @@ function guestDrop(e: DragEvent) {
           <div v-else-if="isGuest" class="avatar avatar-guest"><AppIcon name="user" :size="17" /></div>
           <div v-else class="avatar" :style="{ background: userProfile.color }">{{ userProfile.name[0] }}</div>
           <div class="flex-1 ellipsis">
-            <div class="user-name">
-              {{ isGuest ? '游客' : userProfile.name }}
-              <span v-if="!isGuest && role !== 'user'" class="tag tag-purple role-tag">管理员</span>
-            </div>
+            <div class="user-name">{{ isGuest ? '游客' : userProfile.name }}</div>
             <div class="user-mail ellipsis">{{ isGuest ? '未登录 · 仅可浏览' : userProfile.email }}</div>
           </div>
           <button class="icon-btn" title="退出登录" aria-label="退出登录" @click.stop="showLogoutConfirm = true"><AppIcon name="logout" :size="16" /></button>
@@ -155,19 +169,24 @@ function guestDrop(e: DragEvent) {
       <router-view />
     </main>
 
-    <!-- 退出登录确认弹窗 -->
+    <!-- 退出登录确认弹窗（游客无账号：文案更直接，只问是否确认退出） -->
     <div v-if="showLogoutConfirm" class="modal-mask" data-guest-allow @click.self="showLogoutConfirm = false">
       <div class="modal modal-sm">
-        <div class="modal-title">退出登录</div>
-        <p class="modal-sub">确定要退出当前账号吗？退出后需重新登录才能继续使用。</p>
+        <div class="modal-title">{{ isGuest ? '退出游客模式' : '退出登录' }}</div>
+        <p class="modal-sub">
+          {{ isGuest ? '当前为游客身份浏览，没有账号数据，确认退出并返回首页吗？' : '确定要退出当前账号吗？退出后需重新登录才能继续使用。' }}
+        </p>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="showLogoutConfirm = false">取消</button>
-          <button class="btn btn-danger" @click="handleLogout">退出登录</button>
+          <button class="btn btn-danger" @click="handleLogout">{{ isGuest ? '确认退出' : '退出登录' }}</button>
         </div>
       </div>
     </div>
 
-    <!-- 登录 / 注册弹窗（游客态触发交互时弹出，登录后原地恢复完整权限） -->
+    <!-- 游客提示弹窗：游客态点击功能操作时提醒，含去登录 / 去注册入口 -->
+    <GuestHintModal />
+
+    <!-- 登录 / 注册弹窗（提示弹窗选择后打开，登录后原地恢复完整权限） -->
     <AuthModal />
   </div>
 </template>
@@ -201,6 +220,9 @@ function guestDrop(e: DragEvent) {
 }
 .nav-item:hover { background: var(--surface); color: var(--ink); }
 .nav-item.active { background: var(--tint-lavender); color: var(--brand-purple-800); }
+.nav-divider { height: 1px; background: var(--hairline-soft); margin: 8px 6px; }
+.nav-admin { width: 100%; border: none; background: transparent; font-family: inherit; cursor: pointer; color: var(--brand-purple-800); }
+.nav-admin:hover { background: var(--tint-lavender); }
 
 .sidebar-footer { padding: 12px; border-top: 1px solid var(--hairline-soft); }
 /* 用户卡片可点击进入个人设置：负 margin 扩大热区且不改变外部布局 */
@@ -215,15 +237,12 @@ function guestDrop(e: DragEvent) {
 /* 游客态头像：灰色人形占位 */
 .avatar-guest { background: var(--surface); color: var(--stone); }
 .user-name { font-size: 13px; font-weight: 600; }
-/* 管理员身份小标签（管理员账号在用户端同样可用） */
-.role-tag { font-size: 10px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px; }
 .user-mail { font-size: 11px; color: var(--stone); }
 .icon-btn {
   border: none; background: transparent; color: var(--stone);
   padding: 6px; border-radius: var(--radius-sm); display: flex;
 }
 .icon-btn:hover { background: var(--surface); color: var(--error); }
-
 /* 退出登录确认弹窗 */
 .modal-sm { max-width: 400px; }
 

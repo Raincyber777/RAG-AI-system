@@ -3,8 +3,10 @@
  * 使用说明页：帮助新用户快速理解 智学纪要 的玩法
  * 快速上手三步曲 → 板块导览 → 实用技巧 → 常见问题
  */
-import { ref } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import FaqModal from '@/components/FaqModal.vue'
+import { faqApi, tipsApi } from '@/api'
 
 const steps = [
   { n: 1, title: '上传课堂材料', desc: '进入「课堂纪要」工作台，把课堂录音（mp3/wav/m4a）、板书 PPT 照片或课堂短视频拖进上传区，填好课堂主题', to: '/studio', toText: '去上传' },
@@ -22,46 +24,92 @@ const boards = [
   { icon: 'flag', tint: 'tint-rose', name: '问题反馈', desc: '遇到 Bug 或有建议？填写标题与描述、附上截图提交即可，提交后会收到确认提示。' },
 ]
 
-const tips = [
-  { icon: 'link', text: '答案中的 [1][2] 是引用角标，点开“引用来源”可核对录音原文或板书原图，不怕 AI 编造' },
-  { icon: 'headphones', text: '纪要里的「录音 03:24」角标点开可查看该时间点的转写原文，复习时精准回听' },
-  { icon: 'mic', text: '智能问答输入框支持语音提问与附件上传（图片 / PPT / 文档）；Enter 发送、Shift+Enter 换行' },
-  { icon: 'refresh', text: '视频材料会自动抽帧并去重，只保留信息量最大的关键帧，无需手动截屏或调参' },
-  { icon: 'edit', text: '练习中做错的题会自动收进错题本，点开错题卡片可回看完整题目与解析，按章节重练巩固薄弱点' },
+// ---------- 使用技巧（来自后端配置，分页展示；加载失败回退到内置默认） ----------
+const DEFAULT_TIPS: string[] = [
+  '答案中的 [1][2] 是引用角标，点开“引用来源”可核对录音原文或板书原图，不怕 AI 编造',
+  '纪要里的「录音 03:24」角标点开可查看该时间点的转写原文，复习时精准回听',
+  '智能问答输入框支持语音提问与附件上传（图片 / PPT / 文档）；Enter 发送、Shift+Enter 换行',
+  '视频材料会自动抽帧并去重，只保留信息量最大的关键帧，无需手动截屏或调参',
+  '练习中做错的题会自动收进错题本，点开错题卡片可回看完整题目与解析，按章节重练巩固薄弱点',
 ]
+const TIP_ICONS = ['link', 'headphones', 'mic', 'refresh', 'edit']
+/** 按技巧的全局序号循环取图标（后端只存文本，图标为展示层装饰） */
+function tipIcon(globalIndex: number) {
+  return TIP_ICONS[globalIndex % TIP_ICONS.length]
+}
+const tips = ref<string[]>([...DEFAULT_TIPS])
+// 关键词搜索：过滤后分页（输入或清空关键词时回到第 1 页）
+const tipQuery = ref('')
+const filteredTips = computed(() => {
+  const k = tipQuery.value.trim().toLowerCase()
+  if (!k) return tips.value
+  return tips.value.filter((t) => t.toLowerCase().includes(k))
+})
+const tipPage = ref(1)
+const TIP_PAGE_SIZE = 5
+const tipTotalPages = computed(() => Math.max(1, Math.ceil(filteredTips.value.length / TIP_PAGE_SIZE)))
+const tipSafePage = computed(() => Math.min(tipPage.value, tipTotalPages.value))
+const tipsPaged = computed(() =>
+  filteredTips.value.slice((tipSafePage.value - 1) * TIP_PAGE_SIZE, tipSafePage.value * TIP_PAGE_SIZE),
+)
+watch(tipQuery, () => {
+  tipPage.value = 1
+})
 
-const faqs = ref<{ q: string; a: string; open: boolean }[]>([
+// ---------- 常见问题（来自后端 FAQ 配置，分页展示；加载失败时回退到内置默认） ----------
+const DEFAULT_FAQS: { q: string; a: string }[] = [
   {
     q: '引用里的“录音 03:24”是怎么来的？',
     a: '语音转写模型会为每句话打上时间戳，纪要生成时把结论与其出处对齐，因此每个知识点都能定位到录音的精确时间点，点开角标即可核对原文。',
-    open: false,
   },
   {
     q: '视频太大，浏览器会卡吗？',
     a: '视频在浏览器端通过 ffmpeg.wasm 抽帧，只把关键帧和音轨送往后端，传输量远小于原视频。建议单个视频不超过 20 分钟；过长可先剪辑或只上传录音。',
-    open: false,
   },
   {
     q: '为什么纪要显示“处理失败”？',
     a: '常见原因：音频文件损坏、视频编码不受支持或网络中断。可在「我的纪要」中点击「重新处理」重试；若多次失败，请通过「问题反馈」联系我们。',
-    open: false,
   },
   {
     q: '一节课的纪要包含哪些内容？',
     a: '按「课程主题、核心知识点、重要定义与公式、重点问题」等板块生成；课堂中没有的内容会自动省略。处理参数由系统统一按最佳配置运行，无需手动调整。',
-    open: false,
   },
   {
     q: '我的课堂数据安全吗？',
     a: '录音、图片与纪要仅存储在你的课堂知识库中，不会参与任何模型训练；只有你本人能看到自己的课堂内容，可随时删除。',
-    open: false,
   },
-])
+]
+const faqs = ref(DEFAULT_FAQS.map((f) => ({ ...f })))
+// 关键词搜索：匹配问题与解答（过滤后分页，输入或清空关键词时回到第 1 页）
+const faqQuery = ref('')
+const filteredFaqs = computed(() => {
+  const k = faqQuery.value.trim().toLowerCase()
+  if (!k) return faqs.value
+  return faqs.value.filter((f) => (f.q + f.a).toLowerCase().includes(k))
+})
+const faqPage = ref(1)
+const FAQ_PAGE_SIZE = 5
+const faqTotalPages = computed(() => Math.max(1, Math.ceil(filteredFaqs.value.length / FAQ_PAGE_SIZE)))
+const faqSafePage = computed(() => Math.min(faqPage.value, faqTotalPages.value))
+const faqsPaged = computed(() =>
+  filteredFaqs.value.slice((faqSafePage.value - 1) * FAQ_PAGE_SIZE, faqSafePage.value * FAQ_PAGE_SIZE),
+)
+watch(faqQuery, () => {
+  faqPage.value = 1
+})
 
-function toggle(i: number) {
-  const item = faqs.value[i]
-  if (item) item.open = !item.open
-}
+onMounted(async () => {
+  try {
+    const [tipList, faqList] = await Promise.all([tipsApi.list('user'), faqApi.list('user')])
+    if (tipList.length) tips.value = tipList.map((t) => t.text)
+    if (faqList.length) faqs.value = faqList.map((f) => ({ q: f.q, a: f.a }))
+  } catch {
+    // 后端不可达时展示内置使用技巧与常见问题
+  }
+})
+
+/** 当前查看的 FAQ（点击列表项弹窗展示完整内容；null 表示关闭） */
+const faqView = ref<{ q: string; a: string } | null>(null)
 </script>
 
 <template>
@@ -99,27 +147,69 @@ function toggle(i: number) {
     </div>
 
     <!-- 对话技巧 -->
-    <h2 class="h3 sec-title">让纪要更好用的 5 个技巧</h2>
+    <h2 class="h3 sec-title">让纪要更好用的 {{ tips.length }} 个技巧</h2>
     <div class="card tips-card">
-      <div v-for="t in tips" :key="t.text" class="tip-row">
-        <span class="tip-ico"><AppIcon :name="t.icon" :size="15" /></span>
-        <span class="tip-text">{{ t.text }}</span>
+      <div class="search-box">
+        <AppIcon name="search" :size="15" />
+        <input v-model="tipQuery" class="search-input" type="text" placeholder="搜索使用技巧关键词" />
+        <button v-if="tipQuery" class="search-clear" aria-label="清空技巧搜索" @click="tipQuery = ''">
+          <AppIcon name="x" :size="13" />
+        </button>
+      </div>
+      <div v-for="(t, i) in tipsPaged" :key="t" class="tip-row">
+        <span class="tip-ico"><AppIcon :name="tipIcon((tipSafePage - 1) * TIP_PAGE_SIZE + i)" :size="15" /></span>
+        <span class="tip-text">{{ t }}</span>
+      </div>
+      <p v-if="!filteredTips.length" class="empty-tip">未找到与「{{ tipQuery.trim() }}」相关的使用技巧，换个关键词试试</p>
+      <div v-if="filteredTips.length" class="pager">
+        <span class="pager-info">共 {{ filteredTips.length }} 条</span>
+        <div class="pager-nav">
+          <button class="pager-btn" :disabled="tipSafePage <= 1" aria-label="上一页" @click="tipPage = tipSafePage - 1">
+            <AppIcon name="chevron-left" :size="14" />
+          </button>
+          <span class="pager-page">第 {{ tipSafePage }} / {{ tipTotalPages }} 页</span>
+          <button class="pager-btn" :disabled="tipSafePage >= tipTotalPages" aria-label="下一页" @click="tipPage = tipSafePage + 1">
+            <AppIcon name="chevron-right" :size="14" />
+          </button>
+        </div>
       </div>
     </div>
 
     <!-- 常见问题 -->
-    <h2 class="h3 sec-title">常见问题 FAQ</h2>
+    <h2 class="h3 sec-title">常见问题</h2>
+    <div class="search-box faq-search">
+      <AppIcon name="search" :size="15" />
+      <input v-model="faqQuery" class="search-input" type="text" placeholder="搜索常见问题关键词" />
+      <button v-if="faqQuery" class="search-clear" aria-label="清空问题搜索" @click="faqQuery = ''">
+        <AppIcon name="x" :size="13" />
+      </button>
+    </div>
     <div class="faq-list">
-      <div v-for="(f, i) in faqs" :key="f.q" class="faq-item">
-        <button class="faq-q" @click="toggle(i)">
-          <AppIcon name="chevron-right" :size="15" :style="{ transform: f.open ? 'rotate(90deg)' : '' }" />
+      <div v-for="f in faqsPaged" :key="f.q" class="faq-item">
+        <button class="faq-q" @click="faqView = f">
+          <AppIcon name="chevron-right" :size="15" />
           <span>{{ f.q }}</span>
         </button>
-        <p v-if="f.open" class="faq-a">{{ f.a }}</p>
+      </div>
+      <p v-if="!filteredFaqs.length" class="empty-tip faq-empty">未找到与「{{ faqQuery.trim() }}」相关的常见问题，换个关键词试试</p>
+    </div>
+    <div v-if="filteredFaqs.length" class="pager pager-loose">
+      <span class="pager-info">共 {{ filteredFaqs.length }} 条</span>
+      <div class="pager-nav">
+        <button class="pager-btn" :disabled="faqSafePage <= 1" aria-label="上一页" @click="faqPage = faqSafePage - 1">
+          <AppIcon name="chevron-left" :size="14" />
+        </button>
+        <span class="pager-page">第 {{ faqSafePage }} / {{ faqTotalPages }} 页</span>
+        <button class="pager-btn" :disabled="faqSafePage >= faqTotalPages" aria-label="下一页" @click="faqPage = faqSafePage + 1">
+          <AppIcon name="chevron-right" :size="14" />
+        </button>
       </div>
     </div>
 
     <p class="text-caption foot">更多问题可通过「问题反馈」联系我们，或联系管理员查看系统日志排查。</p>
+
+    <!-- 常见问题详情弹窗 -->
+    <FaqModal :faq="faqView" @close="faqView = null" />
   </div>
 </template>
 
@@ -152,6 +242,31 @@ function toggle(i: number) {
 
 /* 技巧 */
 .tips-card { margin-bottom: 32px; padding: 8px 22px; }
+
+/* 搜索框（使用技巧 / 常见问题共用） */
+.search-box {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--hairline-strong); border-radius: var(--radius-md);
+  background: var(--canvas); padding: 0 12px; height: 38px;
+  color: var(--stone); margin: 10px 0 4px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.search-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--tint-lavender); }
+.search-input {
+  flex: 1; border: none; outline: none; background: transparent;
+  font-family: inherit; font-size: 13.5px; color: var(--ink);
+}
+.search-input::placeholder { color: var(--stone); }
+.search-clear {
+  border: none; background: transparent; color: var(--stone); cursor: pointer;
+  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm); flex-shrink: 0;
+}
+.search-clear:hover { color: var(--ink); background: var(--surface-soft); }
+.faq-search { margin: 0 0 12px; }
+.empty-tip { text-align: center; color: var(--stone); font-size: 13px; padding: 20px 0; }
+.faq-list .empty-tip { border-top: 1px solid var(--hairline-soft); }
+
 .tip-row {
   display: flex; align-items: flex-start; gap: 12px;
   padding: 13px 0; border-bottom: 1px solid var(--hairline-soft);
@@ -175,9 +290,22 @@ function toggle(i: number) {
 }
 .faq-q:hover { background: var(--surface-soft); }
 .faq-q svg { color: var(--stone); transition: transform 0.15s ease; flex-shrink: 0; }
-.faq-a { padding: 0 20px 16px 45px; font-size: 13.5px; color: var(--slate); line-height: 1.7; }
 
 .foot { margin-top: 18px; text-align: center; }
+
+/* 分页条（使用技巧 / 常见问题） */
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 10px 4px 6px; }
+.pager-loose { padding: 12px 4px 0; }
+.pager-info { font-size: 12.5px; color: var(--stone); margin-right: auto; padding-left: 4px; }
+.pager-nav { display: flex; align-items: center; gap: 8px; }
+.pager-btn {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  background: var(--canvas); border: 1px solid var(--hairline-strong); border-radius: var(--radius-sm);
+  color: var(--slate); cursor: pointer; transition: all 0.15s ease;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--steel); color: var(--ink); }
+.pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pager-page { font-size: 12.5px; color: var(--slate); min-width: 72px; text-align: center; }
 
 @media (max-width: 860px) {
   .page { padding: 20px 16px 40px; }

@@ -1,21 +1,22 @@
 <script setup lang="ts">
 /**
- * 数据看板：课堂处理量与追问活跃度
- * - 指标卡：课堂总数 / 转写时长 / 关键帧解析 / 今日追问
- * - 每日处理课堂数趋势（折线）· 输入类型占比（环形）
- * - 高频知识点 TOP10（条形）· 热门追问词云（CSS）
+ * 数据看板：学习数据总览
+ * - 指标卡：课堂总数 / 累计追问 / 练习题量 / 错题记录（来自后端个人统计）
+ * - 每日追问趋势（折线）· 上传类型占比（环形）· 高频知识点 TOP10（条形）· 词云（演示数据）
  */
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import * as echarts from 'echarts'
 import AppIcon from '@/components/AppIcon.vue'
+import { statsApi } from '@/api'
+import { isGuest } from '@/store/auth'
 
-// ---------- 指标卡 ----------
-const metrics = [
-  { label: '课堂总数', value: '12', unit: '节', delta: '+3 本周', tint: 'tint-sky', icon: 'book' },
-  { label: '累计转写时长', value: '8.4', unit: '小时', delta: '+2.1 小时本周', tint: 'tint-lavender', icon: 'headphones' },
-  { label: '关键帧解析', value: '156', unit: '张', delta: '+42 张本周', tint: 'tint-mint', icon: 'image' },
-  { label: '今日追问量', value: '96', unit: '次', delta: '+18% 较昨日', tint: 'tint-peach', icon: 'chat' },
-]
+// ---------- 指标卡（数值来自 /stats/summary/ 个人统计，未加载 / 加载失败时按 0 展示） ----------
+const metrics = ref([
+  { label: '课堂总数', value: '0', unit: '节', delta: '我的全部课堂纪要', tint: 'tint-sky', icon: 'book' },
+  { label: '累计追问', value: '0', unit: '次', delta: '全部课堂问答记录', tint: 'tint-lavender', icon: 'headphones' },
+  { label: '练习题量', value: '0', unit: '题', delta: '题库中的自创题总数', tint: 'tint-mint', icon: 'edit' },
+  { label: '错题记录', value: '0', unit: '题', delta: '错题本中的待巩固题目', tint: 'tint-peach', icon: 'flag' },
+])
 
 // ---------- 词云（热门追问关键词，字号随热度变化） ----------
 const cloudWords = [
@@ -144,9 +145,21 @@ function handleResize() {
   charts.forEach((c) => c.resize())
 }
 
-onMounted(() => {
+onMounted(async () => {
   initCharts()
   window.addEventListener('resize', handleResize)
+  // 指标卡接入后端个人统计
+  if (isGuest.value) return
+  try {
+    const s = await statsApi.summary()
+    if (s.scope !== 'personal') return
+    metrics.value[0]!.value = String(s.notes)
+    metrics.value[1]!.value = String(s.qa_records)
+    metrics.value[2]!.value = String(s.quiz_items)
+    metrics.value[3]!.value = String(s.wrong_records)
+  } catch {
+    // 后端不可达时保持 0
+  }
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)

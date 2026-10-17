@@ -1,19 +1,23 @@
 <script setup lang="ts">
 /**
  * 问题反馈页：提交 Bug / 建议
- * 不区分反馈类型；截图仅支持图片，支持点击或拖拽上传；提交后仅显示成功提示（无回复 / 进度机制）
+ * 不区分反馈类型；截图仅支持图片，支持点击或拖拽上传；提交到后端（未登录默认联系邮箱为账号邮箱）
  */
 import { reactive, ref, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import { feedbackApi } from '@/api'
+import { ApiError } from '@/api/http'
 import { UPLOAD_ACCEPT, isSupportedImage } from '@/utils/uploadFormats'
 
 const form = reactive({ title: '', desc: '' })
 const submitted = ref(false)
+const submitting = ref(false)
+const submitError = ref('')
 let submittedTimer: number | undefined
 
-// ---------- 截图上传（仅图片，点击选择或拖拽，本地预览演示） ----------
+// ---------- 截图上传（仅图片，点击选择或拖拽，本地预览 + 提交时随表单上传） ----------
 const shotInput = ref<HTMLInputElement>()
-const shot = ref<{ name: string; url: string } | null>(null)
+const shot = ref<{ name: string; url: string; file: File } | null>(null)
 const dragActive = ref(false)
 const shotError = ref('')
 
@@ -31,7 +35,7 @@ function acceptShot(f: File) {
     return
   }
   clearShot()
-  shot.value = { name: f.name, url: URL.createObjectURL(f) }
+  shot.value = { name: f.name, url: URL.createObjectURL(f), file: f }
 }
 function onShotChange(e: Event) {
   const input = e.target as HTMLInputElement
@@ -53,16 +57,28 @@ onBeforeUnmount(() => {
   if (submittedTimer) window.clearTimeout(submittedTimer)
 })
 
-// ---------- 提交（本地演示：直接成功并显示确认提示） ----------
+// ---------- 提交（标题 + 描述 + 可选截图上传到后端） ----------
 const canSubmit = () => !!(form.title.trim() && form.desc.trim())
-function submit() {
-  if (!canSubmit() || submitted.value) return
-  form.title = ''
-  form.desc = ''
-  clearShot()
-  submitted.value = true
-  if (submittedTimer) window.clearTimeout(submittedTimer)
-  submittedTimer = window.setTimeout(() => (submitted.value = false), 2600)
+async function submit() {
+  if (!canSubmit() || submitting.value || submitted.value) return
+  submitting.value = true
+  submitError.value = ''
+  try {
+    await feedbackApi.create(
+      { title: form.title.trim(), content: form.desc.trim() },
+      shot.value ? [shot.value.file] : [],
+    )
+    form.title = ''
+    form.desc = ''
+    clearShot()
+    submitted.value = true
+    if (submittedTimer) window.clearTimeout(submittedTimer)
+    submittedTimer = window.setTimeout(() => (submitted.value = false), 2600)
+  } catch (e) {
+    submitError.value = e instanceof ApiError ? e.message : '提交失败，请确认后端已启动'
+  } finally {
+    submitting.value = false
+  }
 }
 </script>
 
@@ -118,11 +134,16 @@ function submit() {
         <p v-else class="field-hint">仅支持图片，拖拽图片文件到上方框内即可上传</p>
       </div>
 
+      <!-- 提交失败提示 -->
+      <div v-if="submitError" class="submit-err" role="alert">{{ submitError }}</div>
       <!-- 提交成功提示 -->
       <div v-if="submitted" class="submit-ok">
         <AppIcon name="check" :size="14" /> 反馈已提交，感谢您的建议。
       </div>
-      <button class="btn btn-primary btn-lg w-full" :disabled="!canSubmit()" @click="submit">提交反馈</button>
+      <button class="btn btn-primary btn-lg w-full" :disabled="!canSubmit() || submitting" @click="submit">
+        <span v-if="submitting" class="spinner"></span>
+        {{ submitting ? '提交中…' : '提交反馈' }}
+      </button>
     </section>
   </div>
 </template>
@@ -152,6 +173,14 @@ function submit() {
 }
 .shot-clear:hover { background: var(--surface-soft); color: var(--error); }
 .field-hint.hint-err { color: #d92d20; }
+
+/* 提交失败提示 */
+.submit-err {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--error); background: var(--tint-rose);
+  padding: 10px 14px; border-radius: var(--radius-md);
+  font-size: 13.5px; font-weight: 500; margin-bottom: 12px;
+}
 
 /* 提交成功提示 */
 .submit-ok {

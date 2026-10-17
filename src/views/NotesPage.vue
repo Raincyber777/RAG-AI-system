@@ -4,15 +4,29 @@
  * 查看（工作台回看）/ 追问 / 导出 Markdown / 删除（确认弹窗）/ 失败重试
  * 数据来自共享 store（工作台新生成的纪要实时出现在这里）
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
-import { classNotes, removeClassNote, updateNote, activeCourses } from '@/store/study'
+import { classNotes, removeClassNote, updateNote, activeCourses, ensureNotesLoaded, noteFromApi } from '@/store/study'
+import { notesApi } from '@/api'
 import type { ClassNote } from '@/mock/data'
 import { buildNoteMarkdown, downloadText } from '@/utils/exportNote'
 
 const router = useRouter()
+
+// 删除 / 重新处理失败提示（2.6 秒后自动消失）
+const actionTip = ref('')
+let tipTimer: number | undefined
+function flashTip(msg: string) {
+  actionTip.value = msg
+  if (tipTimer) window.clearTimeout(tipTimer)
+  tipTimer = window.setTimeout(() => (actionTip.value = ''), 2600)
+}
+
+onMounted(() => {
+  void ensureNotesLoaded() // 直接进入本页时补拉纪要列表（已在加载中则自动去重）
+})
 
 const search = ref('')
 const filter = ref<'all' | 'done' | 'failed'>('all')
@@ -42,8 +56,6 @@ const doneCount = computed(() => classNotes.value.filter((n) => n.status === 'do
 const failedCount = computed(() => classNotes.value.filter((n) => n.status === 'failed').length)
 const totalChunks = computed(() => classNotes.value.reduce((s, n) => s + n.chunkCount, 0))
 
-watch([search, filter], () => { /* 预留：真实接口下此处重新拉取 */ })
-
 const statusTag: Record<ClassNote['status'], string> = {
   done: 'tag-green',
   processing: 'tag-blue',
@@ -65,34 +77,30 @@ function exportNote(n: ClassNote) {
   downloadText(n.title, buildNoteMarkdown(n))
 }
 
-// 删除确认弹窗（替代原生 confirm）
+// 删除确认弹窗（替代原生 confirm）：先调后端删除，成功后同步本地
 const deleteTarget = ref<ClassNote | null>(null)
-function confirmDelete() {
-  if (deleteTarget.value) removeClassNote(deleteTarget.value.id)
+async function confirmDelete() {
+  const t = deleteTarget.value
   deleteTarget.value = null
+  if (!t) return
+  try {
+    await notesApi.remove(t.id)
+    removeClassNote(t.id)
+  } catch {
+    flashTip('删除失败，请确认后端已启动')
+  }
 }
 
-// 失败重试（演示：2 秒后标记完成）
-function retryNote(n: ClassNote) {
+// 失败重试：调用后端重新处理（演示流水线立即完成占位生成）
+async function retryNote(n: ClassNote) {
   updateNote(n.id, { status: 'processing' })
-  window.setTimeout(() => {
-    updateNote(n.id, {
-      status: 'done',
-      keyframes: 6,
-      chunkCount: 26,
-      theme:
-        '本节课围绕泰勒公式与泰勒级数展开。教师首先回顾了麦克劳林公式，推导了常用函数（e^x、sin x、cos x）的展开式，随后讲解了拉格朗日余项与佩亚诺余项的区别与选用场景。',
-      points: [
-        { text: '泰勒公式：f(x) 在 x₀ 处 n 阶可导，可用多项式逼近，余项刻画逼近误差', cite: '录音 03:24' },
-        { text: '麦克劳林公式是 x₀ = 0 的特殊情形，e^x = 1 + x + x²/2! + …', cite: 'PPT 第2页' },
-        { text: '拉格朗日余项适合定性估计误差，佩亚诺余项适合求极限时的局部展开', cite: '录音 11:47' },
-      ],
-      definitions: [
-        { term: '泰勒公式', detail: 'f(x) = Σ f⁽ⁿ⁾(x₀)/n! · (x-x₀)ⁿ + Rₙ(x)，其中 Rₙ 为余项', cite: 'PPT 第3页' },
-      ],
-      emphasized: ['期末必考：用泰勒展开求 undefined 型极限，至少展开到分母的最高阶'],
-    })
-  }, 2000)
+  try {
+    const apiNote = await notesApi.reprocess(n.id)
+    updateNote(n.id, noteFromApi(apiNote))
+  } catch {
+    updateNote(n.id, { status: 'failed' })
+    flashTip('重新处理失败，请确认后端已启动')
+  }
 }
 </script>
 
@@ -110,6 +118,8 @@ function retryNote(n: ClassNote) {
         <div v-if="failedCount" class="chip tint-rose"><b>{{ failedCount }}</b> 失败</div>
       </div>
     </header>
+
+    <div v-if="actionTip" class="action-tip" role="alert">{{ actionTip }}</div>
 
     <!-- 筛选行 -->
     <div class="filter-row">
@@ -196,6 +206,12 @@ function retryNote(n: ClassNote) {
 .chip b { font-weight: 700; margin-right: 2px; }
 
 .filter-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+/* 删除 / 重新处理失败提示 */
+.action-tip {
+  background: var(--tint-rose); color: var(--error);
+  font-size: 12.5px; font-weight: 500; line-height: 1.5;
+  border-radius: var(--radius-md); padding: 9px 14px; margin-bottom: 14px;
+}
 .filter-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .course-select { width: 180px; }
 .search-box {

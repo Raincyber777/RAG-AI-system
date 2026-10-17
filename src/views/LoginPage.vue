@@ -5,11 +5,13 @@
  * 导航点击平滑滚动到对应板块（滚动时高亮当前板块）
  * 登录 / 注册为导航按钮，点击打开共用登录弹窗（AuthModal，状态在 store/auth）
  */
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AuthModal from '@/components/AuthModal.vue'
+import FaqModal from '@/components/FaqModal.vue'
 import { openAuth, guestLogin } from '@/store/auth'
+import { faqApi } from '@/api'
 import heroImg from '@/assets/landing-students.png'
 
 const router = useRouter()
@@ -74,28 +76,39 @@ const steps = [
   { title: '纪要 · 追问 · 练习', desc: '流式生成结构化课堂纪要并随时导出；继续追问，或一键生成练习题巩固' },
 ]
 
-/* ---------- 常见问题 ---------- */
-const faqs = ref([
+/* ---------- 常见问题（首页专用 FAQ，来自后端 home 作用域，展示前 3 条；加载失败回退内置） ---------- */
+const DEFAULT_FAQS: { q: string; a: string }[] = [
   {
     q: '纪要里的「录音 03:24」是怎么来的？',
     a: '语音转写模型会为每句话打上时间戳，纪要生成时把结论与其出处对齐，因此每个知识点都能定位到录音的精确时间点，点开角标即可核对原文。',
-    open: false,
   },
   {
     q: '视频太大，浏览器会卡吗？',
     a: '视频在浏览器端抽帧，只把关键帧和音轨送往后端，传输量远小于原视频。建议单个视频不超过 20 分钟；过长可先剪辑或只上传录音。',
-    open: false,
   },
   {
     q: '我的课堂数据安全吗？',
     a: '录音、图片与纪要仅存储在你的课堂知识库中，不会参与任何模型训练；只有你本人能看到自己的课堂内容，可随时删除。',
-    open: false,
   },
-])
-function toggleFaq(i: number) {
-  const f = faqs.value[i]
-  if (f) f.open = !f.open
-}
+]
+const faqs = ref(DEFAULT_FAQS.map((f) => ({ ...f })))
+// 关键词搜索：默认只展示前 3 条，输入关键词后在整个常见问题库中过滤
+const faqQuery = ref('')
+const visibleFaqs = computed(() => {
+  const k = faqQuery.value.trim().toLowerCase()
+  if (!k) return faqs.value.slice(0, 3)
+  return faqs.value.filter((f) => (f.q + f.a).toLowerCase().includes(k))
+})
+onMounted(async () => {
+  try {
+    const list = await faqApi.list('home')
+    if (list.length) faqs.value = list.map((f) => ({ q: f.q, a: f.a }))
+  } catch {
+    // 后端不可达时展示内置常见问题
+  }
+})
+/** 当前查看的 FAQ（点击列表项弹窗展示完整内容；null 表示关闭） */
+const faqView = ref<{ q: string; a: string } | null>(null)
 </script>
 
 <template>
@@ -210,16 +223,23 @@ function toggleFaq(i: number) {
         <div class="sec-inner sec-inner-narrow">
           <div class="sec-head">
             <h2>常见问题</h2>
-            <p>关于课堂纪要与数据安全的三个高频问题</p>
+            <p>{{ faqQuery.trim() ? `找到 ${visibleFaqs.length} 个与「${faqQuery.trim()}」相关的问题` : '关于课堂纪要与数据安全的三个高频问题，支持关键词搜索' }}</p>
+          </div>
+          <div class="faq-search-box">
+            <AppIcon name="search" :size="15" />
+            <input v-model="faqQuery" class="faq-search-input" type="text" placeholder="搜索常见问题关键词" />
+            <button v-if="faqQuery" class="faq-search-clear" aria-label="清空问题搜索" @click="faqQuery = ''">
+              <AppIcon name="x" :size="13" />
+            </button>
           </div>
           <div class="faq-list">
-            <div v-for="(f, i) in faqs" :key="f.q" class="faq-item">
-              <button class="faq-q" :class="{ open: f.open }" @click="toggleFaq(i)">
-                <span class="faq-ico"><AppIcon name="plus" :size="15" /></span>
+            <div v-for="f in visibleFaqs" :key="f.q" class="faq-item">
+              <button class="faq-q" @click="faqView = f">
+                <span class="faq-ico"><AppIcon name="chevron-right" :size="15" /></span>
                 <span>{{ f.q }}</span>
               </button>
-              <p v-if="f.open" class="faq-a">{{ f.a }}</p>
             </div>
+            <p v-if="!visibleFaqs.length" class="faq-none">未找到与「{{ faqQuery.trim() }}」相关的常见问题，换个关键词试试</p>
           </div>
         </div>
       </section>
@@ -250,6 +270,9 @@ function toggleFaq(i: number) {
 
     <!-- 登录 / 注册弹窗（共用组件，状态在 store/auth） -->
     <AuthModal />
+
+    <!-- 常见问题详情弹窗 -->
+    <FaqModal :faq="faqView" @close="faqView = null" />
   </div>
 </template>
 
@@ -372,6 +395,28 @@ function toggleFaq(i: number) {
 .step-desc { font-size: 13px; line-height: 1.75; color: var(--slate); }
 
 /* 常见问题 */
+/* 常见问题搜索框 */
+.faq-search-box {
+  display: flex; align-items: center; gap: 9px;
+  border: 1px solid var(--hairline-strong); border-radius: 12px;
+  background: var(--canvas); padding: 0 14px; height: 42px;
+  color: var(--stone); margin-bottom: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.faq-search-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--tint-lavender); }
+.faq-search-input {
+  flex: 1; border: none; outline: none; background: transparent;
+  font-family: inherit; font-size: 14px; color: var(--ink);
+}
+.faq-search-input::placeholder { color: var(--stone); }
+.faq-search-clear {
+  border: none; background: transparent; color: var(--stone); cursor: pointer;
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; flex-shrink: 0;
+}
+.faq-search-clear:hover { color: var(--ink); background: var(--surface-soft); }
+.faq-none { text-align: center; color: var(--stone); font-size: 14px; padding: 26px 0; }
+
 .faq-list { border: 1px solid var(--hairline); border-radius: 16px; overflow: hidden; background: var(--canvas); }
 .faq-item + .faq-item { border-top: 1px solid var(--hairline); }
 .faq-q {
@@ -381,8 +426,7 @@ function toggleFaq(i: number) {
 }
 .faq-q:hover { background: var(--surface-soft); }
 .faq-ico { display: flex; color: var(--stone); transition: transform 0.18s ease, color 0.18s ease; flex-shrink: 0; }
-.faq-q.open .faq-ico { transform: rotate(45deg); color: var(--primary); }
-.faq-a { padding: 0 20px 16px 46px; font-size: 13.5px; color: var(--slate); line-height: 1.75; }
+.faq-q:hover .faq-ico { color: var(--primary); transform: translateX(2px); }
 
 /* 底部 CTA */
 .cta-band-wrap { padding: 16px 32px 96px; }
