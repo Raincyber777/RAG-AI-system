@@ -162,6 +162,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: Citation[]
+  /** RAG 生成的追问建议（回答下方可点击继续问） */
+  followups?: string[]
   attachments?: ChatAttachment[]
   liked?: boolean
   disliked?: boolean

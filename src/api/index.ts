@@ -95,6 +95,8 @@ export interface ApiQaRecord {
   question: string
   answer: string
   references: { label: string; time: string; detail: string }[]
+  /** RAG 生成的追问建议（回答下方可点击继续问） */
+  followups: string[]
   liked: boolean
   created_at: string
 }
@@ -108,6 +110,8 @@ export const qaApi = {
       data: { ...(noteId ? { note_id: Number(noteId) } : {}), question },
     }),
   like: (id: number) => request<ApiQaRecord>(`/qa/${id}/like/`, { method: 'POST' }),
+  /** 欢迎页个性化追问建议（按用户近期提问生成，失败由页面回退默认文案） */
+  suggestions: () => request<{ suggestions: string[] }>('/qa/suggestions/'),
 }
 
 // ---------- 题库 / 错题本 ----------

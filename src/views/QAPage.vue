@@ -199,7 +199,7 @@ function recordToMessages(r: ApiQaRecord): ChatMessage[] {
     { id: 'q' + r.id, role: 'user', content: r.question, time },
     {
       id: 'a' + r.id, role: 'assistant', content: r.answer,
-      citations, liked: r.liked, qaId: r.id, time,
+      citations, followups: r.followups, liked: r.liked, qaId: r.id, time,
     },
   ]
 }
@@ -537,6 +537,7 @@ async function streamAnswer() {
     }))
     msg.liked = r.liked
     msg.qaId = r.id
+    if (r.followups?.length) msg.followups = r.followups
     const note = activeNote.value
     if (note) note.questions++ // 会话角标即时 +1（下次拉取与后端计数对齐）
   }
@@ -636,11 +637,14 @@ function citeMarkText(c: Citation) {
 }
 
 // ---------- 建议 ----------
+// 兜底推荐：游客态 / 接口失败 / 后端暂无个性化数据时使用
+const FALLBACK_SUGGESTIONS = ['帮我总结上一节课的重点', '泰勒展开有哪些易错点？', '进程和线程的区别是什么？', '二叉树的四种遍历怎么背？']
+// 个性化追问：登录后由后端按「近期提问」生成（后端未配模型 key 时为规则版），失败静默回退兜底
+const personalized = ref<string[] | null>(null)
 const suggestions = computed(() => {
   const t = activeNote.value?.title
-  return t
-    ? [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
-    : ['帮我总结上一节课的重点', '泰勒展开有哪些易错点？', '进程和线程的区别是什么？', '二叉树的四种遍历怎么背？']
+  if (t) return [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
+  return personalized.value ?? FALLBACK_SUGGESTIONS
 })
 
 function suggestionClick(q: string) {
@@ -658,6 +662,14 @@ onMounted(async () => {
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKey)
   await ensureNotesLoaded()
+  // 拉取个性化追问建议（游客态跳过；失败静默保留兜底文案）
+  if (!isGuest.value) {
+    qaApi.suggestions()
+      .then((d) => {
+        if (Array.isArray(d.suggestions) && d.suggestions.length) personalized.value = d.suggestions
+      })
+      .catch(() => {})
+  }
   // note 对话按最新纪要列表补齐（watch 为异步触发，这里先行补齐一次）
   for (const n of classNotes.value) {
     if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
@@ -841,6 +853,14 @@ onBeforeUnmount(() => {
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <!-- 追问建议：RAG 依据本条回答生成的下一步可问问题，点击即发送 -->
+                <div v-if="msg.followups?.length" class="msg-followups">
+                  <button v-for="q in msg.followups" :key="q" class="fu-chip" @click="suggestionClick(q)">
+                    <AppIcon name="chat" :size="12" />
+                    <span class="ellipsis">{{ q }}</span>
+                  </button>
                 </div>
 
                 <div class="msg-actions">
@@ -1126,6 +1146,16 @@ onBeforeUnmount(() => {
 }
 .sug-card:hover { border-color: var(--primary); background: var(--tint-lavender); color: var(--brand-purple-800); }
 .sug-card svg { color: var(--stone); flex-shrink: 0; }
+/* 回答下方追问建议 chips */
+.msg-followups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.fu-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%; padding: 7px 12px; border: 1px solid var(--hairline);
+  border-radius: 999px; background: var(--canvas);
+  font-size: 13px; color: var(--charcoal); cursor: pointer; transition: all 0.15s ease;
+}
+.fu-chip:hover { border-color: var(--primary); background: var(--tint-lavender); color: var(--brand-purple-800); }
+.fu-chip svg { color: var(--stone); flex-shrink: 0; }
 .welcome-guide {
   display: inline-flex; align-items: center; gap: 5px;
   margin-top: 18px; font-size: 13px; font-weight: 500; color: var(--link-blue);
