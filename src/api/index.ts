@@ -94,7 +94,8 @@ export interface ApiQaRecord {
   user_name: string
   question: string
   answer: string
-  references: { label: string; time: string; detail: string }[]
+  /** 引用来源：kind=kb 知识库片段（time 带录音时间戳）/ external 外部检索（带 url） */
+  references: { label: string; time: string; detail: string; kind?: 'kb' | 'external'; url?: string }[]
   /** RAG 生成的追问建议（回答下方可点击继续问） */
   followups: string[]
   liked: boolean
@@ -128,7 +129,11 @@ export async function streamAsk(
   try {
     res = await fetch(`${BASE}/qa/ask/stream/`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      headers: {
+        'ngrok-skip-browser-warning': '1',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
       body: JSON.stringify({ ...(noteId ? { note_id: Number(noteId) } : {}), question }),
     })
   } catch {
@@ -295,4 +300,26 @@ export interface PersonalStats {
 
 export const statsApi = {
   summary: () => request<PersonalStats>('/stats/summary/'),
+}
+
+// ---------- 公告与协议 ----------
+export interface ApiAnnouncement {
+  id: number
+  title: string
+  content: string
+  status: 'published' | 'withdrawn'
+  creator_name: string
+  created_at: string
+  withdrawn_at: string | null
+}
+
+export const announcementApi = {
+  list: () => listAll<ApiAnnouncement>('/announcements/'),
+  unread: () => request<{ count: number; latest: ApiAnnouncement | null }>('/announcements/unread/'),
+  markAllRead: () => request<{ detail: string }>('/announcements/read/', { method: 'POST', data: { all: true } }),
+}
+
+export const legalApi = {
+  get: (key: 'terms' | 'privacy') =>
+    request<{ content: string; updated_at: string | null }>(`/legal/${key}/`),
 }

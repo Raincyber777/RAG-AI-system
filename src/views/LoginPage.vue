@@ -8,8 +8,11 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import LogoMark from '@/components/LogoMark.vue'
 import AuthModal from '@/components/AuthModal.vue'
 import FaqModal from '@/components/FaqModal.vue'
+import PolicyModal from '@/components/PolicyModal.vue'
+import { PRIVACY_POLICY, USER_AGREEMENT, type PolicyDoc } from '@/content/policies'
 import { openAuth, guestLogin } from '@/store/auth'
 import { faqApi } from '@/api'
 import heroImg from '@/assets/landing-students.png'
@@ -109,6 +112,12 @@ onMounted(async () => {
 })
 /** 当前查看的 FAQ（点击列表项弹窗展示完整内容；null 表示关闭） */
 const faqView = ref<{ q: string; a: string } | null>(null)
+
+/** 页脚打开的协议文档（null 表示关闭） */
+const policyDoc = ref<PolicyDoc | null>(null)
+function switchPolicy(key: PolicyDoc['key']) {
+  policyDoc.value = key === 'terms' ? USER_AGREEMENT : PRIVACY_POLICY
+}
 </script>
 
 <template>
@@ -117,15 +126,7 @@ const faqView = ref<{ q: string; a: string } | null>(null)
     <header class="nav" :class="{ scrolled: navScrolled }">
       <div class="nav-inner">
         <a class="brand" href="#" aria-label="智学纪要 · 回到顶部" @click.prevent="scrollToTop">
-          <svg class="brand-mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#zx-lg)" />
-            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
-            <defs>
-              <linearGradient id="zx-lg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6d5ae0" /><stop offset="1" stop-color="#4534b3" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <LogoMark class="brand-mark" :size="30" />
           <span class="brand-name">智学纪要</span>
         </a>
 
@@ -169,7 +170,6 @@ const faqView = ref<{ q: string; a: string } | null>(null)
                 了解使用流程 <AppIcon name="download" :size="14" />
               </button>
             </div>
-            <p class="hero-note">浏览器直接使用 · 演示环境可一键体验 · 无需安装</p>
           </div>
 
           <div class="hero-visual">
@@ -258,12 +258,13 @@ const faqView = ref<{ q: string; a: string } | null>(null)
     <footer class="foot">
       <div class="foot-inner">
         <div class="foot-brand">
-          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="#5645d4" />
-            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
-          </svg>
+          <LogoMark :size="22" />
           智学纪要
         </div>
+        <nav class="foot-links" aria-label="法律条款">
+          <button class="foot-link" @click="policyDoc = USER_AGREEMENT">用户协议</button>
+          <button class="foot-link" @click="policyDoc = PRIVACY_POLICY">隐私政策</button>
+        </nav>
         <span class="foot-cap">© 2026 智学纪要 · 多模态课堂知识助手</span>
       </div>
     </footer>
@@ -273,6 +274,9 @@ const faqView = ref<{ q: string; a: string } | null>(null)
 
     <!-- 常见问题详情弹窗 -->
     <FaqModal :faq="faqView" @close="faqView = null" />
+
+    <!-- 用户协议 / 隐私政策查看弹窗 -->
+    <PolicyModal :doc="policyDoc" @close="policyDoc = null" @switch="switchPolicy" />
   </div>
 </template>
 
@@ -337,7 +341,6 @@ const faqView = ref<{ q: string; a: string } | null>(null)
 }
 .cta-ghost:hover { color: var(--primary); }
 .cta-ghost svg { transform: rotate(180deg); }
-.hero-note { margin-top: 18px; font-size: 12.5px; color: var(--stone); }
 
 /* Hero 右侧视觉：照片 + 撞色几何 */
 .hero-visual { position: relative; }
@@ -446,9 +449,17 @@ const faqView = ref<{ q: string; a: string } | null>(null)
 
 /* 页脚 */
 .foot { border-top: 1px solid var(--hairline); background: var(--surface-soft); }
-.foot-inner { max-width: 1200px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; }
-.foot-brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; color: var(--ink-deep); }
-.foot-cap { font-size: 12.5px; color: var(--stone); }
+/* 三列 1fr auto 1fr：中间的协议链接严格居中，不随两侧内容宽度偏移 */
+.foot-inner { max-width: 1200px; margin: 0 auto; padding: 22px 32px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
+.foot-brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; color: var(--ink-deep); justify-self: start; }
+.foot-links { display: flex; gap: 4px; justify-self: center; }
+.foot-link {
+  border: none; background: transparent; font-family: inherit; cursor: pointer;
+  font-size: 12.5px; color: var(--slate); padding: 4px 10px; border-radius: 7px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.foot-link:hover { color: var(--ink); background: var(--surface); }
+.foot-cap { font-size: 12.5px; color: var(--stone); justify-self: end; }
 
 /* ============ 响应式 ============ */
 @media (max-width: 1020px) {

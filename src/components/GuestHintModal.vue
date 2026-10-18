@@ -15,7 +15,7 @@ import { guestHintOpen, closeGuestHint, openAuthFromHint } from '@/store/auth'
 
       <span class="hint-ico"><AppIcon name="lock" :size="22" /></span>
       <div class="hint-title">登录后即可使用该功能</div>
-      <p class="hint-desc">当前为游客模式，仅可浏览演示内容。登录或注册后即可上传材料、生成纪要、追问与练习。</p>
+      <p class="hint-desc">当前为游客模式，仅可浏览。登录或注册后即可上传材料、生成纪要、追问与练习。</p>
 
       <div class="hint-actions">
         <button class="btn btn-secondary" @click="openAuthFromHint('register')">去注册</button>

@@ -203,19 +203,3 @@ export async function logout() {
   }
 }
 
-/**
- * 登录表单下方展示的演示账号（与后端 seed_demo 写入的账号一致）
- * 点击可一键填入登录表单：普通用户登录后留在用户端；管理员 / 超级管理员登录后先进入管理端
- */
-export interface DemoLoginAccount {
-  label: string
-  email: string
-  phone: string
-  password: string
-}
-
-export const DEMO_ACCOUNTS: DemoLoginAccount[] = [
-  { label: '普通用户', email: 'linxz@zhiyuan.ai', phone: '13800001001', password: '123456' },
-  { label: '管理员', email: 'chenjw@zhiyuan.ai', phone: '13800000002', password: 'admin123456' },
-  { label: '超级管理员', email: 'admin@zhiyuan.ai', phone: '13800000001', password: 'admin123456' },
-]

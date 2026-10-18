@@ -7,14 +7,20 @@
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import LogoMark from '@/components/LogoMark.vue'
+import PolicyModal from '@/components/PolicyModal.vue'
+import { PRIVACY_POLICY, USER_AGREEMENT, type PolicyDoc } from '@/content/policies'
 import {
   authModalOpen, authModalMode, closeAuth, guestLogin, login, register,
-  buildAdminSsoUrl, DEMO_ACCOUNTS, type AuthMode, type DemoLoginAccount,
+  buildAdminSsoUrl, type AuthMode,
 } from '@/store/auth'
 import { ApiError } from '@/api/http'
 
 const route = useRoute()
 const router = useRouter()
+
+/** 当前查看的协议文档（null 表示关闭）；由勾选处链接 / 页脚打开 */
+const policyDoc = ref<PolicyDoc | null>(null)
 
 // 登录方式：邮箱 / 手机号
 type LoginType = 'email' | 'phone'
@@ -76,11 +82,9 @@ async function submit() {
   }
 }
 
-/** 演示账号一键填入：切换为邮箱登录并写入邮箱与密码 */
-function fillDemo(d: DemoLoginAccount) {
-  loginType.value = 'email'
-  email.value = d.email
-  password.value = d.password
+/** 协议弹窗内的文档切换 */
+function switchPolicy(key: PolicyDoc['key']) {
+  policyDoc.value = key === 'terms' ? USER_AGREEMENT : PRIVACY_POLICY
 }
 
 function sendReset() {
@@ -125,15 +129,7 @@ onBeforeUnmount(() => {
         <button class="auth-x" aria-label="关闭弹窗" @click="closeAuth"><AppIcon name="x" :size="15" /></button>
 
         <div class="auth-brand">
-          <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#zx-auth)" />
-            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
-            <defs>
-              <linearGradient id="zx-auth" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6d5ae0" /><stop offset="1" stop-color="#4534b3" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <LogoMark :size="26" />
           <span class="auth-brand-name">智学纪要</span>
         </div>
 
@@ -188,20 +184,6 @@ onBeforeUnmount(() => {
               <span v-if="loading" class="spinner"></span>
               {{ loading ? '请稍候…' : '登 录' }}
             </button>
-
-            <!-- 演示账号：点击一键填入（管理员 / 超级管理员登录后先进入管理端） -->
-            <div class="demo-box">
-              <div class="demo-title">演示账号（点击一键填入）</div>
-              <button
-                v-for="d in DEMO_ACCOUNTS" :key="d.email"
-                type="button" class="demo-row"
-                @click="fillDemo(d)"
-              >
-                <span class="demo-role">{{ d.label }}</span>
-                <span class="demo-acc ellipsis">{{ d.email }}</span>
-                <span class="demo-pwd">{{ d.password }}</span>
-              </button>
-            </div>
           </form>
 
           <!-- 注册 -->
@@ -238,7 +220,7 @@ onBeforeUnmount(() => {
             </div>
             <label class="agree-row">
               <input v-model="agree" type="checkbox" />
-              <span>我已阅读并同意<a href="#" @click.stop.prevent>《用户协议》</a>与<a href="#" @click.stop.prevent>《隐私政策》</a></span>
+              <span>我已阅读并同意<a href="#" @click.stop.prevent="policyDoc = USER_AGREEMENT">《用户协议》</a>与<a href="#" @click.stop.prevent="policyDoc = PRIVACY_POLICY">《隐私政策》</a></span>
             </label>
             <button class="btn btn-primary btn-block btn-lg" type="submit" :disabled="loading || !agree">
               <span v-if="loading" class="spinner"></span>
@@ -268,7 +250,7 @@ onBeforeUnmount(() => {
               <AppIcon name="check" :size="18" />
               <div>
                 <div class="sent-title">重置链接已发送</div>
-                <div class="text-caption">请前往 {{ forgotAccount }} 查收（演示环境不会真实发信）</div>
+                <div class="text-caption">请前往 {{ forgotAccount }} 查收</div>
               </div>
             </div>
 
@@ -287,6 +269,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </Transition>
+
+  <!-- 用户协议 / 隐私政策查看弹窗 -->
+  <PolicyModal :doc="policyDoc" @close="policyDoc = null" @switch="switchPolicy" />
 </template>
 
 <style scoped>
@@ -372,21 +357,6 @@ onBeforeUnmount(() => {
 .divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--stone); font-size: 12px; }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--hairline); }
 
-/* 演示账号（登录表单下方，点击一键填入） */
-.demo-box {
-  margin-top: 14px; padding: 10px 12px;
-  background: var(--surface-soft); border-radius: 10px;
-}
-.demo-title { font-size: 11.5px; font-weight: 600; color: var(--stone); margin-bottom: 4px; }
-.demo-row {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  border: none; background: transparent; font-family: inherit; text-align: left;
-  padding: 5px 6px; border-radius: 6px; cursor: pointer; transition: background 0.15s ease;
-}
-.demo-row:hover { background: var(--canvas); }
-.demo-role { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--primary); min-width: 58px; }
-.demo-acc { flex: 1; min-width: 0; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.demo-pwd { flex-shrink: 0; font-size: 11.5px; color: var(--stone); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .form-fade-enter-active, .form-fade-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
 .form-fade-enter-from, .form-fade-leave-to { opacity: 0; transform: translateY(6px); }
 </style>

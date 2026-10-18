@@ -1,12 +1,16 @@
 /**
- * 统一请求封装：所有接口走 Django 后端 http://localhost:8000/api
+ * 统一请求封装：所有接口走同源 /api（Vite 开发服务器代理到 Django 8080；
+ * 通过 ngrok 隧道访问时同样同源，避开免费版拦截页与跨域问题）
  * - 自动携带 Authorization: Bearer <access>（localStorage zy_token）
  * - 401 时用 zy_refresh 换新 token 并重放一次；刷新失败清空登录态并回调 onAuthExpired
  * - 统一解析 DRF 错误响应（{detail} / 字段错误对象）为 Error(message)
  */
 
-export const BASE = 'http://localhost:8000/api'
+export const BASE = '/api'
 export const TOKEN_KEY = 'zy_token'
+
+/** ngrok 免费版会对不带此请求头的浏览器请求弹拦截页；fetch 统一带上（图片/音频标签请求由同源代理规避） */
+const NGROK_SKIP = { 'ngrok-skip-browser-warning': '1' }
 export const REFRESH_KEY = 'zy_refresh'
 
 /** 登录过期（刷新失败）时由 store/auth 注入：清空本地登录态并提示 */
@@ -61,7 +65,7 @@ async function refreshAccess(): Promise<boolean> {
   try {
     const res = await fetch(`${BASE}/auth/refresh/`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...NGROK_SKIP },
       body: JSON.stringify({ refresh }),
     })
     if (!res.ok) return false
@@ -88,6 +92,7 @@ async function requestOnce<T>(path: string, opts: RequestOptions, token: string)
     res = await fetch(`${BASE}${path}`, {
       method: opts.method ?? 'GET',
       headers: {
+        ...NGROK_SKIP,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(opts.data !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
@@ -132,7 +137,8 @@ export async function listAll<T>(path: string, params: Record<string, string> = 
   while (url) {
     const page = await request<Page<T>>(url)
     out.push(...page.results)
-    url = page.next ? page.next.replace(BASE, '') : ''
+    // next 是后端按请求 Host 拼的绝对地址，剥掉协议+域名只留路径，保证始终同源翻页
+    url = page.next ? page.next.replace(/^https?:\/\/[^/]+/, '') : ''
   }
   return out
 }

@@ -9,6 +9,7 @@ import { acceptUserSso, remoteLogoutCleanup } from '@/store/auth'
  * /notes     我的纪要（课堂卡片管理与导出）
  * /quiz      自创题练习（筛选生成题目 / 作答批改 / 错题本）
  * /dashboard 数据看板
+ * /announcements 公告管理（查看平台公告）
  * /settings  个人设置（资料 / 密码）
  * /feedback  问题反馈
  */
@@ -50,6 +51,12 @@ const router = createRouter({
           name: 'dashboard',
           component: () => import('@/views/DashboardPage.vue'),
           meta: { title: '数据看板' },
+        },
+        {
+          path: 'announcements',
+          name: 'announcements',
+          component: () => import('@/views/AnnouncementsPage.vue'),
+          meta: { title: '公告管理' },
         },
         {
           path: 'settings',

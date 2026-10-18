@@ -18,6 +18,7 @@ import { buildNoteMarkdown, downloadText } from '@/utils/exportNote'
 import {
   UPLOAD_EXTS,
   UPLOAD_KIND_META,
+  UPLOAD_MAX_MB,
   detectUploadKind,
   uploadAcceptAttr,
   formatFileSize,
@@ -165,6 +166,10 @@ function handleFiles(list: FileList | null | undefined) {
     }
     const kind = detectUploadKind(f.name)
     if (!kind) continue
+    if (f.size > UPLOAD_MAX_MB[kind] * 1024 * 1024) {
+      flashZoneTip(`「${f.name}」超过${UPLOAD_KIND_META[kind].label}上限 ${UPLOAD_MAX_MB[kind]}MB，未添加`)
+      continue
+    }
     if (inputFiles.value.some((x) => x.name === f.name && x.size === formatFileSize(f.size))) {
       dupCount++
       continue
@@ -487,7 +492,7 @@ function startGenerate() {
             } else if (n.status === 'failed') {
               clearAllTimers()
               genState.value = 'stopped'
-              genError.value = '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / TXT / MD），可重新处理或更换材料'
+              genError.value = '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
             }
           } catch { /* 网络抖动等下一轮 */ }
         }, 4000)
@@ -852,7 +857,7 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <p v-if="genState === 'done' && note" class="note-foot">已存入「我的纪要」，知识片段 {{ note.chunkCount }} 条 · 关键帧 {{ note.keyframes }} 张（演示数据）</p>
+          <p v-if="genState === 'done' && note" class="note-foot">已存入「我的纪要」，知识片段 {{ note.chunkCount }} 条 · 关键帧 {{ note.keyframes }} 张</p>
         </div>
 
         <!-- 引用溯源卡片 -->

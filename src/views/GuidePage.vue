@@ -16,12 +16,13 @@ const steps = [
 
 const boards = [
   { icon: 'spark', tint: 'tint-yellow-bold', name: '课堂纪要工作台', desc: '核心板块。多模态上传 + Agent 工作流可视化 + 结构化纪要流式生成，支持中途停止与重新生成，完成后一键导出 Markdown。' },
-  { icon: 'chat', tint: 'tint-mint', name: '智能问答', desc: '基于课堂纪要知识库的多轮问答。回答下方展示引用来源卡片：录音第几分钟、哪张 PPT / 板书，可点赞 / 重新生成，支持语音提问与附件上传。' },
+  { icon: 'chat', tint: 'tint-mint', name: '智能问答', desc: '知识库优先的多轮问答：先检索课堂纪要作答，覆盖不足时自动补充经审核的外部网络知识并标注「补充自外部知识」。回答下方展示引用来源卡片（录音时间点 / 纪要片段 / 外部网页链接），可点赞 / 重新生成，支持语音提问与附件上传。' },
   { icon: 'book', tint: 'tint-sky', name: '我的纪要', desc: '所有课堂纪要的卡片视图：查看回放原文、继续追问、导出 Markdown、删除。工作台新生成的纪要会实时出现在这里。' },
   { icon: 'edit', tint: 'tint-yellow', name: '自创题练习', desc: '基于已完成的课堂纪要自动出题：选择题（随机单选 / 多选 / 不定项）、判断、填空、简答，可按课程与章节筛选；作答后即时批改并展示解析，错题自动进入错题本，支持按章节重练与分页浏览。' },
   { icon: 'chart', tint: 'tint-lavender', name: '数据看板', desc: '课堂总数、转写时长、关键帧解析量、每日追问趋势、材料类型占比、高频知识点排行与热门追问词云。' },
   { icon: 'sliders', tint: 'tint-peach', name: '个人设置', desc: '维护个人资料、头像、手机号 / 邮箱与登录密码。处理与生成参数由系统统一按最佳配置运行，无需手动调整。' },
   { icon: 'flag', tint: 'tint-rose', name: '问题反馈', desc: '遇到 Bug 或有建议？填写标题与描述、附上截图提交即可，提交后会收到确认提示。' },
+  { icon: 'horn', tint: 'tint-lavender', name: '公告管理', desc: '平台公告与最新通知集中查看：新公告通过侧边栏角标与登录弹窗提醒一次，支持搜索与按时间筛选，浏览后角标自动清除。' },
 ]
 
 // ---------- 使用技巧（来自后端配置，分页展示；加载失败回退到内置默认） ----------
@@ -137,7 +138,7 @@ const faqView = ref<{ q: string; a: string } | null>(null)
     </section>
 
     <!-- 板块导览 -->
-    <h2 class="h3 sec-title">七大板块导览</h2>
+    <h2 class="h3 sec-title">八大板块导览</h2>
     <div class="board-grid">
       <div v-for="b in boards" :key="b.name" class="board-card" :class="b.tint">
         <div class="board-icon"><AppIcon :name="b.icon" :size="18" /></div>

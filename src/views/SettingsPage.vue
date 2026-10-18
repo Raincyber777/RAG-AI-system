@@ -127,7 +127,7 @@ function sendPhoneCode() {
   if (!PHONE_RE.test(v)) { phone.error = '手机号格式不正确'; return }
   if (v === userProfile.phone) { phone.error = '新手机号与当前手机号相同'; return }
   startCooldown('phone')
-  phone.sent = `验证码已发送至 ${maskPhone(v)}（演示验证码：${DEMO_CODE}）`
+  phone.sent = `验证码已发送至 ${maskPhone(v)}（验证码：${DEMO_CODE}）`
 }
 async function confirmPhone() {
   phone.error = ''
@@ -158,7 +158,7 @@ function sendEmailCode() {
   if (!EMAIL_RE.test(v)) { email.error = '邮箱格式不正确'; return }
   if (v === userProfile.email) { email.error = '新邮箱与当前邮箱相同'; return }
   startCooldown('email')
-  email.sent = `验证码已发送至原邮箱 ${maskEmail(userProfile.email)}（演示验证码：${DEMO_CODE}）`
+  email.sent = `验证码已发送至原邮箱 ${maskEmail(userProfile.email)}（验证码：${DEMO_CODE}）`
 }
 async function confirmEmail() {
   email.error = ''
@@ -228,7 +228,7 @@ async function updatePassword() {
       <div class="card card-lg guest-state">
         <span class="guest-ico"><AppIcon name="lock" :size="22" /></span>
         <div class="guest-title">登录后即可管理个人资料与账号安全</div>
-        <p class="guest-desc">当前为游客模式，仅可浏览演示内容。登录或注册后，即可在这里维护头像、用户名、手机号、邮箱与密码。</p>
+        <p class="guest-desc">当前为游客模式。登录或注册后，即可在这里维护头像、用户名、手机号、邮箱与密码。</p>
         <div class="guest-actions">
           <button class="btn btn-primary" data-guest-allow @click="openAuth('login')">立即登录</button>
           <button class="btn btn-secondary" data-guest-allow @click="openAuth('register')">注册新账号</button>

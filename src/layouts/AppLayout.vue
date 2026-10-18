@@ -1,17 +1,20 @@
 <script setup lang="ts">
 /**
  * 全局布局：左侧导航栏 + 右侧内容区
- * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 自创题练习 / 数据看板 / 个人设置 / 问题反馈 / 使用说明
+ * 导航项：课堂纪要 / 智能问答 / 我的纪要 / 自创题练习 / 数据看板 / 公告管理 / 个人设置 / 问题反馈 / 使用说明
  * 游客模式：主内容区只读 —— 点击按钮 / 输入 / 拖拽上传等交互统一弹出「登录后即可使用」提示（可去登录 / 去注册）；
  * 侧边栏导航（查看各页面）与退出登录不受限制
  */
 import { useRouter, useRoute } from 'vue-router'
-import { ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AnnouncementModal from '@/components/AnnouncementModal.vue'
 import AuthModal from '@/components/AuthModal.vue'
 import GuestHintModal from '@/components/GuestHintModal.vue'
 import { userProfile } from '@/store/study'
 import { isGuest, role, logout as authLogout, showGuestHint, buildAdminSsoUrl } from '@/store/auth'
+import { refreshUnread, unreadCount } from '@/store/notice'
+import LogoMark from '@/components/LogoMark.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -23,10 +26,24 @@ const navs = [
   { path: '/notes', icon: 'book', label: '我的纪要' },
   { path: '/quiz', icon: 'edit', label: '自创题练习' },
   { path: '/dashboard', icon: 'chart', label: '数据看板' },
+  { path: '/announcements', icon: 'horn', label: '公告管理' },
   { path: '/settings', icon: 'sliders', label: '个人设置' },
   { path: '/feedback', icon: 'flag', label: '问题反馈' },
   { path: '/guide', icon: 'star', label: '使用说明' },
 ]
+
+/** 角标文案：99+ 封顶 */
+function badgeText(n: number) {
+  return n > 99 ? '99+' : String(n)
+}
+
+// 新公告角标：登录后拉取；游客 → 注册/登录（isGuest true→false）后重新拉取
+onMounted(() => {
+  if (!isGuest.value) void refreshUnread()
+})
+watch(isGuest, (g, old) => {
+  if (old && !g) void refreshUnread()
+})
 
 // 用户卡片点击 → 个人设置；退出登录需二次确认
 function goSettings() {
@@ -98,15 +115,7 @@ function guestDrop(e: DragEvent) {
     <aside class="sidebar" :class="{ open: sidebarOpen }" data-guest-allow>
       <div class="brand" @click="router.push('/studio')">
         <div class="brand-logo">
-          <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#zx-nav)" />
-            <path d="M16 6.5l2.4 7.1 7.1 2.4-7.1 2.4L16 25.5l-2.4-7.1-7.1-2.4 7.1-2.4z" fill="#fff" />
-            <defs>
-              <linearGradient id="zx-nav" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6d5ae0" /><stop offset="1" stop-color="#4534b3" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <LogoMark :size="26" />
         </div>
         <div>
           <div class="brand-name">智学纪要</div>
@@ -125,6 +134,8 @@ function guestDrop(e: DragEvent) {
         >
           <AppIcon :name="n.icon" :size="17" />
           <span>{{ n.label }}</span>
+          <!-- 新公告角标：公告管理导航上的未读数 -->
+          <span v-if="n.path === '/announcements' && unreadCount > 0" class="nav-badge">{{ badgeText(unreadCount) }}</span>
         </router-link>
 
         <!-- 管理员 / 超级管理员：返回管理端入口（携带登录态 SSO 跳转） -->
@@ -186,6 +197,9 @@ function guestDrop(e: DragEvent) {
     <!-- 游客提示弹窗：游客态点击功能操作时提醒，含去登录 / 去注册入口 -->
     <GuestHintModal />
 
+    <!-- 登录后新公告弹窗：只提醒一次，点「我知道了」后不再弹（发新公告除外） -->
+    <AnnouncementModal />
+
     <!-- 登录 / 注册弹窗（提示弹窗选择后打开，登录后原地恢复完整权限） -->
     <AuthModal />
   </div>
@@ -221,6 +235,12 @@ function guestDrop(e: DragEvent) {
 .nav-item:hover { background: var(--surface); color: var(--ink); }
 .nav-item.active { background: var(--tint-lavender); color: var(--brand-purple-800); }
 .nav-divider { height: 1px; background: var(--hairline-soft); margin: 8px 6px; }
+/* 新公告未读角标 */
+.nav-badge {
+  margin-left: auto; min-width: 17px; height: 17px; padding: 0 5px;
+  border-radius: 999px; background: var(--error); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+}
 .nav-admin { width: 100%; border: none; background: transparent; font-family: inherit; cursor: pointer; color: var(--brand-purple-800); }
 .nav-admin:hover { background: var(--tint-lavender); }
 

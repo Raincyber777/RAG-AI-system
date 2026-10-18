@@ -3,8 +3,9 @@
  * 常见问题详情弹窗：点击 FAQ 列表项后弹出，完整展示问题与解答
  * × / 遮罩点击 / Esc 均可关闭（根类名 faq-view-mask：避开布局作用域的 .mask 规则）
  */
-import { onBeforeUnmount, onMounted } from 'vue'
+import { onBeforeUnmount, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import { authModalOpen } from '@/store/auth'
 
 const props = defineProps<{ faq: { q: string; a: string } | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -12,14 +13,18 @@ const emit = defineEmits<{ close: [] }>()
 function onEscKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.faq) emit('close')
 }
-onMounted(() => {
-  window.addEventListener('keydown', onEscKey)
-  document.body.style.overflow = 'hidden'
-})
+// 组件随页面常驻挂载，body 滚动锁必须跟随 props.faq 开关，而非 onMounted（否则页面加载即锁死滚动）
+window.addEventListener('keydown', onEscKey)
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEscKey)
-  document.body.style.overflow = ''
+  document.body.style.overflow = authModalOpen.value ? 'hidden' : ''
 })
+watch(
+  () => props.faq,
+  (v) => {
+    document.body.style.overflow = v || authModalOpen.value ? 'hidden' : ''
+  },
+)
 </script>
 
 <template>

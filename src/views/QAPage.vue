@@ -185,14 +185,18 @@ const loadedSessions = new Set<string>()
 
 /** 后端问答记录 → 会话内两条消息（用户提问 + 助手回答） */
 function recordToMessages(r: ApiQaRecord): ChatMessage[] {
-  const citations: Citation[] = r.references.map((ref, i) => ({
-    no: i + 1,
-    kind: ref.time ? 'audio' : 'image',
-    mark: ref.time || ref.label,
-    note: r.note_title,
-    snippet: ref.detail,
-    score: Math.max(0.6, 0.92 - i * 0.08),
-  }))
+  const citations: Citation[] = r.references.map((ref, i) => {
+    const ext = ref.kind === 'external'
+    return {
+      no: i + 1,
+      kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
+      mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
+      note: ext ? '网络检索' : r.note_title,
+      snippet: ref.detail,
+      score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
+      url: ref.url,
+    }
+  })
   const time = r.created_at.slice(11, 16) || now()
   return [
     { id: 'q' + r.id, role: 'user', content: r.question, time },
@@ -257,19 +261,33 @@ function runStages() {
   aiStage.value = 'searching'
   stageTimers.push(window.setTimeout(() => { aiStage.value = 'thinking' }, 1100))
   stageTimers.push(window.setTimeout(() => { aiStage.value = 'composing' }, 2400))
-  stageTimers.push(window.setTimeout(() => {
-    isTyping.value = false
-    aiStage.value = null
-    streamAnswer()
-  }, 3300))
+  stageTimers.push(window.setTimeout(() => { streamAnswer() }, 3300))
+}
+
+// 流式等待期状态：正式消息气泡已创建但首字未到（检索 / 外部搜索耗时不定），
+// 必须持续显示阶段文案，绝不能渲染成无字空框；阶段在思考 / 组织间轮换表示活跃
+const streamStage = ref<AiStage | null>(null)
+let stageCycle: number | null = null
+
+function stopStageCycle() {
+  if (stageCycle !== null) { window.clearInterval(stageCycle); stageCycle = null }
+}
+
+function startStageCycle() {
+  stopStageCycle()
+  stageCycle = window.setInterval(() => {
+    streamStage.value = streamStage.value === 'thinking' ? 'composing' : 'thinking'
+  }, 3500)
 }
 
 function stopGenerating() {
   clearStageTimers()
+  stopStageCycle()
   if (streamTimer) { window.clearInterval(streamTimer); streamTimer = null }
   isTyping.value = false
   isStreaming.value = false
   aiStage.value = null
+  streamStage.value = null
 }
 
 // 把当前对话关联课堂的纪要标题代入演示回答（更贴近真实观感）
@@ -341,7 +359,7 @@ const ATTACH_MENU: { kind: AttachKind; label: string; hint: string }[] = [
   { kind: 'ppt', label: '上传 PPT', hint: 'ppt / pptx 演示文稿' },
   { kind: 'audio', label: '上传音频', hint: 'mp3 / wav / m4a 等' },
   { kind: 'video', label: '上传视频', hint: 'mp4 / mov / mkv 等' },
-  { kind: 'doc', label: '更多格式文档', hint: 'pdf / word / excel 等' },
+  { kind: 'doc', label: '更多格式文档', hint: 'pdf / word / excel / 压缩包等' },
 ]
 
 const attachments = ref<AttachItem[]>([])
@@ -521,6 +539,9 @@ function askQuestion(text: string) {
 
 async function streamAnswer() {
   isStreaming.value = true
+  isTyping.value = false // 前置气泡切到正式消息气泡，等待期状态由 streamStage 接管
+  streamStage.value = aiStage.value || 'composing'
+  startStageCycle()
   const msg: ChatMessage = reactive({
     id: 'a' + Date.now(),
     role: 'assistant',
@@ -546,6 +567,8 @@ async function streamAnswer() {
       if (i >= reply.content.length) {
         window.clearInterval(timer)
         streamTimer = null
+        streamStage.value = null
+        stopStageCycle()
         isStreaming.value = false
         scrollToBottom()
       }
@@ -567,22 +590,28 @@ async function streamAnswer() {
       scrollToBottom()
       return
     }
-    if (!settled) return // 回答还没收完：继续等下一个增量
+    if (!settled) return // 回答还没收完：继续等下一个增量（气泡内持续显示阶段文案）
     window.clearInterval(timer)
     streamTimer = null
+    streamStage.value = null
+    stopStageCycle()
     if (buf.error) {
       msg.content = `回答生成失败：${buf.error}`
     } else {
       const r = buf.record
       if (r) {
-        msg.citations = r.references.map((ref, i) => ({
-          no: i + 1,
-          kind: ref.time ? 'audio' : 'image',
-          mark: ref.time || ref.label,
-          note: r.note_title,
-          snippet: ref.detail,
-          score: Math.max(0.6, 0.92 - i * 0.08),
-        }))
+        msg.citations = r.references.map((ref, i) => {
+          const ext = ref.kind === 'external'
+          return {
+            no: i + 1,
+            kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
+            mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
+            note: ext ? '网络检索' : r.note_title,
+            snippet: ref.detail,
+            score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
+            url: ref.url,
+          }
+        })
         msg.liked = r.liked
         msg.qaId = r.id
         if (r.followups?.length) msg.followups = r.followups
@@ -667,10 +696,15 @@ function segLevel(score: number) {
   return Math.min(10, Math.max(1, Math.round(score * 10)))
 }
 function citeIcon(c: Citation) {
-  return c.kind === 'audio' ? 'headphones' : 'image'
+  if (c.kind === 'audio') return 'headphones'
+  if (c.kind === 'external') return 'globe'
+  if (c.kind === 'kb') return 'file'
+  return 'image'
 }
 function citeMarkText(c: Citation) {
-  return c.kind === 'audio' ? `录音 ${c.mark}` : c.mark
+  if (c.kind === 'audio') return `录音 ${c.mark}`
+  if (c.kind === 'external') return '外部来源'
+  return c.mark
 }
 
 // ---------- 建议 ----------
@@ -859,7 +893,17 @@ onBeforeUnmount(() => {
 
             <div v-else class="row-ai fade-in" :data-mid="msg.id">
               <div class="ai-body">
-                <div class="ai-bubble" v-html="renderContent(msg.content)"></div>
+                <!-- 流式等待期（检索 / 外部搜索中，首字未到）：显示阶段文案，绝不渲染无字空框 -->
+                <div v-if="!msg.content && streamStage" class="ai-bubble typing">
+                  <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+                  <Transition name="stage" mode="out-in">
+                    <span :key="streamStage" class="typing-stage">
+                      <AppIcon :name="STAGE_ICON[streamStage]" :size="13" />
+                      {{ STAGE_TEXT[streamStage] }}…
+                    </span>
+                  </Transition>
+                </div>
+                <div v-else class="ai-bubble" v-html="renderContent(msg.content)"></div>
 
                 <!-- 引用溯源：录音时间戳 / 图片来源 -->
                 <div v-if="msg.citations?.length" class="cite-panel">
@@ -878,10 +922,14 @@ onBeforeUnmount(() => {
                         </span>
                       </div>
                       <div class="cite-meta">
-                        <span class="tag tag-gray ellipsis">{{ c.note }}</span>
+                        <span class="tag tag-gray ellipsis">{{ c.kind === 'external' ? c.mark : c.note }}</span>
                       </div>
                       <p class="cite-snippet">{{ c.snippet }}</p>
-                      <div class="cite-score">
+                      <a v-if="c.kind === 'external' && c.url" class="cite-link" :href="c.url" target="_blank" rel="noopener">
+                        <AppIcon name="link" :size="12" />
+                        打开原文
+                      </a>
+                      <div v-else class="cite-score">
                         <span>相关度</span>
                         <span class="score-segs" role="img" :aria-label="`相关度 ${(c.score * 100).toFixed(0)}%`">
                           <i v-for="n in 10" :key="n" :class="{ on: n <= segLevel(c.score) }"></i>
@@ -1250,6 +1298,13 @@ onBeforeUnmount(() => {
 }
 .cite-kind.audio { background: var(--tint-sky); color: var(--link-blue); }
 .cite-kind.image { background: var(--tint-mint); color: var(--brand-green); }
+.cite-kind.kb { background: var(--tint-peach); color: var(--brand-orange); }
+.cite-kind.external { background: var(--tint-lavender); color: var(--brand-purple-800); }
+.cite-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; font-weight: 600; color: var(--link-blue); text-decoration: none;
+}
+.cite-link:hover { text-decoration: underline; }
 .cite-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cite-snippet { color: var(--slate); line-height: 1.6; margin-bottom: 9px; }
 .cite-score { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--steel); }

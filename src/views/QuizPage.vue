@@ -531,7 +531,7 @@ function detailRemove() {
           <div class="ge-ico"><AppIcon name="alert" :size="20" /></div>
           <div class="gs-main">
             <div class="gs-title">题目生成失败</div>
-            <p class="text-sm">{{ errorMsg }}（演示环境会随机模拟生成失败，可点击重试）</p>
+            <p class="text-sm">{{ errorMsg }}（可点击重试）</p>
           </div>
           <button class="btn btn-primary" type="button" @click="startGenerate()">
             <AppIcon name="refresh" :size="14" /> 重试

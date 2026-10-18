@@ -129,7 +129,8 @@ export async function renameCourse(oldName: string, newName: string): Promise<bo
 
 // ---------- 用户资料（侧边栏用户卡片与个人设置共享） ----------
 function mediaUrl(path: string): string {
-  return path.startsWith('http') ? path : `http://localhost:8000${path}`
+  // /media/... 直接用同源路径（Vite 已代理到 Django 8080），本机与 ngrok 隧道访问均可用
+  return path
 }
 
 export const userProfile = reactive({
