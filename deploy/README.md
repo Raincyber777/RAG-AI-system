@@ -4,11 +4,14 @@ push 到 `main` / `txy` 分支即自动构建并发布，无需登录服务器�
 
 ## 架构
 
+> 该 ECS 与其他项目（控糖管家，占 80/443/8000）共用一台机器，
+> RAG 全部走独立端口，互不干扰。
+
 ```
 GitHub push
   └─ GitHub Actions：npm ci → npm run build（含类型检查）→ 打包 dist
        └─ SSH 上传 ECS，原子切换发布目录
-            ├─ /var/www/rag-user   ← 用户端（nginx :80）
+            ├─ /var/www/rag-user   ← 用户端（nginx :8082）
             └─ /var/www/rag-admin  ← 管理端（nginx :8081）
                   └─ /api、/media → 反代本机 Django(:8080)
 ```
@@ -21,7 +24,7 @@ GitHub push
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/rag_deploy_key -N "" -C "github-actions-deploy"
-ssh-copy-id -i ~/.ssh/rag_deploy_key.pub 用户名@服务器IP    # 这一步输一次服务器密码
+ssh-copy-id -i ~/.ssh/rag_deploy_key.pub root@服务器IP    # 这一步输一次服务器密码
 ```
 
 > 也可以在服务器上手动执行：把 `~/.ssh/rag_deploy_key.pub` 的内容追加到服务器
@@ -33,37 +36,39 @@ Secrets（两个仓库都配，值相同）：
 
 | 名称 | 值 |
 |---|---|
-| `DEPLOY_HOST` | ECS 公网 IP，如 `47.x.x.x` |
-| `DEPLOY_USER` | SSH 用户名（上一步 ssh-copy-id 用的） |
+| `DEPLOY_HOST` | ECS 公网 IP，如 `39.96.61.195` |
+| `DEPLOY_USER` | SSH 用户名（如 `root`） |
 | `DEPLOY_PORT` | SSH 端口，22 可以不配 |
 | `DEPLOY_SSH_KEY` | `~/.ssh/rag_deploy_key`（私钥）文件**全部内容** |
 
-Variables（注意在 **Variables** 标签页，不是 Secrets）：
+Variables（注意在 **Variables** 标签页，不是 Secrets；两个仓库的名字不同）：
 
 | 仓库 | 名称 | 值 |
 |---|---|---|
-| 用户端 RAG-AI-system | `VITE_ADMIN_ORIGIN` | `http://服务器IP:8081` |
-| 管理端 RAG-admin | `VITE_USER_ORIGIN` | `http://服务器IP` |
+| 用户端 RAG-AI-system | `VITE_ADMIN_ORIGIN` | `http://39.96.61.195:8081` |
+| 管理端 RAG-admin | `VITE_USER_ORIGIN` | `http://39.96.61.195:8082` |
 
-> 这两个值会编译进前端，用于两端互跳（SSO / 退出回跳）。
-> 有域名后改成域名即可（如 `https://demo.example.com:8081`）。
+> 这两个值会编译进前端，用于两端互跳（SSO / 退出回跳），**端口不能漏**。
+> 有域名后改成域名即可。
 
 ### 3. 服务器：nginx 站点配置
 
-把本目录的 `nginx-rag.conf` 上传到服务器：
+把本目录的 `nginx-rag.conf` 上传到服务器（用户端站点监听 **8082**，管理端 **8081**）：
 
 ```bash
-scp deploy/nginx-rag.conf 用户名@服务器IP:/etc/nginx/conf.d/rag.conf
-ssh 用户名@服务器IP "sudo nginx -t && sudo systemctl reload nginx"
+scp deploy/nginx-rag.conf root@39.96.61.195:/etc/nginx/conf.d/rag.conf
+ssh root@39.96.61.195 "nginx -t && systemctl reload nginx"
 ```
 
-并确认阿里云控制台**安全组**放行 80 / 8081 入方向；Django 的
-`ALLOWED_HOSTS` / `CSRF_TRUSTED_ORIGINS` 包含服务器 IP（或域名）。
+并在阿里云控制台 **安全组** 放行 **8081 / 8082** 入方向（80/443 已被其他项目占用，不要动）。
+Django 部署后其 `ALLOWED_HOSTS` / `CSRF_TRUSTED_ORIGINS` 需包含服务器 IP。
 
 ### 4. 触发
 
-把代码 push 上去（或到 Actions 页点 `workflow_dispatch` 手动跑一次），
-Actions 跑完访问 `http://服务器IP`（用户端）/ `http://服务器IP:8081`（管理端）。
+push 代码（或 Actions 页 `workflow_dispatch` 手动跑）后访问：
+
+- 用户端：`http://39.96.61.195:8082`
+- 管理端：`http://39.96.61.195:8081`
 
 ## 日常使用
 
