@@ -6,7 +6,7 @@
  */
 import { ref } from 'vue'
 
-import { authApi, type ApiRole, type ApiUser, type AuthPayload } from '@/api'
+import { authApi, type ApiRole, type ApiUser, type AuthPayload, type CodeChannel } from '@/api'
 import { clearTokens, getRefresh, getToken, saveTokens, setAuthExpiredHandler } from '@/api/http'
 
 export type AuthMode = 'login' | 'register' | 'forgot'
@@ -175,8 +175,11 @@ export async function login(account: string, password: string): Promise<AuthPayl
   return payload
 }
 
-/** 真实注册（后端注册即登录）：成功自动建立会话 */
-export async function register(form: { name: string; phone: string; email: string; password: string }) {
+/** 真实注册（后端注册即登录，需验证码）：成功自动建立会话 */
+export async function register(form: {
+  name: string; phone: string; email: string; password: string
+  code: string; code_channel: CodeChannel
+}) {
   const payload = await authApi.register(form)
   applyAuthPayload(payload)
   return payload

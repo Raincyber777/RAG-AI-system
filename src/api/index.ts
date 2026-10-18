@@ -26,11 +26,27 @@ export interface AuthPayload {
   user: ApiUser
 }
 
+/** 注册验证码的接收通道（phone=短信到手机号）；可用性由 /auth/code-channels/ 协商 */
+export type CodeChannel = 'email' | 'phone'
+
+export interface CodeSendResult {
+  detail: string
+  expires_in: number
+  /** 仅后端 DEBUG（本地联调）返回：验证码未真正发出，直接回填输入框 */
+  dev_code?: string
+}
+
 export const authApi = {
   login: (account: string, password: string) =>
     request<AuthPayload>('/auth/login/', { method: 'POST', data: { account, password } }),
-  register: (form: { name: string; phone: string; email: string; password: string }) =>
-    request<AuthPayload>('/auth/register/', { method: 'POST', data: form }),
+  register: (form: {
+    name: string; phone: string; email: string; password: string
+    code: string; code_channel: CodeChannel
+  }) => request<AuthPayload>('/auth/register/', { method: 'POST', data: form }),
+  /** 哪些验证码接收方式已开通（未开通的通道前端隐藏对应选项） */
+  codeChannels: () => request<{ email: boolean; phone: boolean }>('/auth/code-channels/'),
+  sendCode: (channel: CodeChannel, target: string) =>
+    request<CodeSendResult>('/auth/code/send/', { method: 'POST', data: { channel, target } }),
   logout: (refresh: string) => request<void>('/auth/logout/', { method: 'POST', data: { refresh } }),
   me: () => request<ApiUser>('/auth/me/'),
   updateMe: (patch: Record<string, string>) =>

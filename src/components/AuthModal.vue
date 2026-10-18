@@ -14,6 +14,7 @@ import {
   authModalOpen, authModalMode, closeAuth, guestLogin, login, register,
   buildAdminSsoUrl, type AuthMode,
 } from '@/store/auth'
+import { authApi, type CodeChannel } from '@/api'
 import { ApiError } from '@/api/http'
 
 const route = useRoute()
@@ -40,6 +41,16 @@ const showLoginPwd = ref(false)
 const showRegPhone = ref(false)
 const showRegPwd = ref(false)
 
+// 注册验证码：接收通道按后端实际开通情况展示，发送后 60s 倒计时
+const code = ref('')
+const codeChannel = ref<CodeChannel>('email')
+const channels = ref({ email: true, phone: false })
+const channelsLoaded = ref(false)
+const sendingCode = ref(false)
+const codeCountdown = ref(0)
+const codeSentTip = ref('')
+let codeTimer: ReturnType<typeof setInterval> | null = null
+
 // 找回密码（演示流程，支持手机号或邮箱）
 const forgotAccount = ref('')
 const forgotSent = ref(false)
@@ -49,6 +60,16 @@ function switchMode(m: AuthMode) {
   authModalMode.value = m
   errorMsg.value = ''
   forgotSent.value = false
+  if (m === 'register' && !channelsLoaded.value) {
+    // 只拉一次可用通道；失败按默认（仅邮箱）处理，发码时后端会给出具体提示
+    channelsLoaded.value = true
+    authApi.codeChannels()
+      .then((d) => {
+        channels.value = d
+        if (!d.email && d.phone) codeChannel.value = 'phone' // 邮箱未开通时默认短信
+      })
+      .catch(() => {})
+  }
 }
 
 /** 登录 / 注册成功后：管理员 / 超级管理员携带 token 进入管理端，普通用户进入用户端 */
@@ -68,7 +89,10 @@ async function submit() {
   loading.value = true
   try {
     if (authModalMode.value === 'register') {
-      await register({ name: username.value.trim(), phone: phone.value.trim(), email: email.value.trim(), password: password.value })
+      await register({
+        name: username.value.trim(), phone: phone.value.trim(), email: email.value.trim(),
+        password: password.value, code: code.value.trim(), code_channel: codeChannel.value,
+      })
       afterAuthed(false) // 注册账号固定为普通用户
     } else {
       const id = loginType.value === 'email' ? email.value.trim() : phone.value.trim()
@@ -80,6 +104,56 @@ async function submit() {
     errorMsg.value = e instanceof ApiError ? e.message : '网络异常，请稍后再试'
     loading.value = false
   }
+}
+
+/** 验证码按钮文案：发送中 / 倒计时 / 待获取 */
+const codeBtnLabel = () =>
+  sendingCode.value ? '发送中…' : codeCountdown.value > 0 ? `${codeCountdown.value}s 后重发` : '获取验证码'
+
+/** 开始 60s 重发倒计时；期间按钮禁用，弹窗关闭即终止 */
+function startCountdown() {
+  codeCountdown.value = 60
+  codeTimer = setInterval(() => {
+    codeCountdown.value -= 1
+    if (codeCountdown.value <= 0 && codeTimer) {
+      clearInterval(codeTimer)
+      codeTimer = null
+    }
+  }, 1000)
+}
+
+/** 向当前通道的接收目标发送注册验证码 */
+async function sendCode() {
+  if (sendingCode.value || codeCountdown.value > 0) return
+  const target = (codeChannel.value === 'email' ? email.value : phone.value).trim()
+  if (codeChannel.value === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target)) {
+    errorMsg.value = '请先填写正确的邮箱'
+    return
+  }
+  if (codeChannel.value === 'phone' && !/^1[3-9]\d{9}$/.test(target)) {
+    errorMsg.value = '请先填写正确的手机号'
+    return
+  }
+  errorMsg.value = ''
+  sendingCode.value = true
+  try {
+    const res = await authApi.sendCode(codeChannel.value, target)
+    codeSentTip.value = res.detail
+    if (res.dev_code) code.value = res.dev_code // 本地 DEBUG：验证码未真正发出，直接回填
+    startCountdown()
+  } catch (e) {
+    errorMsg.value = e instanceof ApiError ? e.message : '网络异常，请稍后再试'
+  } finally {
+    sendingCode.value = false
+  }
+}
+
+function stopCountdown() {
+  if (codeTimer) {
+    clearInterval(codeTimer)
+    codeTimer = null
+  }
+  codeCountdown.value = 0
 }
 
 /** 协议弹窗内的文档切换 */
@@ -101,7 +175,7 @@ function doGuestLogin() {
   if (route.name === 'login') router.push('/studio')
 }
 
-// 弹窗打开时锁定背景滚动、支持 Esc 关闭；重新打开时重置找回密码状态
+// 弹窗打开时锁定背景滚动、支持 Esc 关闭；重新打开时重置找回密码 / 验证码状态
 function onEscKey(e: KeyboardEvent) {
   if (e.key === 'Escape') closeAuth()
 }
@@ -110,6 +184,8 @@ watch(authModalOpen, (v) => {
   if (v) {
     forgotSent.value = false
     errorMsg.value = ''
+    codeSentTip.value = ''
+    stopCountdown()
     window.addEventListener('keydown', onEscKey)
   } else {
     window.removeEventListener('keydown', onEscKey)
@@ -118,6 +194,7 @@ watch(authModalOpen, (v) => {
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onEscKey)
+  stopCountdown()
 })
 </script>
 
@@ -208,6 +285,26 @@ onBeforeUnmount(() => {
             <div class="field">
               <label class="field-label" for="reg-email">邮箱</label>
               <input id="reg-email" v-model="email" class="input" type="email" placeholder="you@example.com" required />
+            </div>
+            <div class="field">
+              <label class="field-label" for="reg-code">验证码</label>
+              <!-- 接收方式仅展示后端实际开通的通道（/auth/code-channels/ 协商） -->
+              <div v-if="channels.email && channels.phone" class="type-tabs code-way" role="tablist" aria-label="验证码接收方式">
+                <button type="button" class="type-tab" :class="{ active: codeChannel === 'email' }" @click="codeChannel = 'email'">邮箱接收</button>
+                <button type="button" class="type-tab" :class="{ active: codeChannel === 'phone' }" @click="codeChannel = 'phone'">短信接收</button>
+              </div>
+              <div class="code-row">
+                <input
+                  id="reg-code" v-model="code" class="input code-input" type="text" inputmode="numeric"
+                  placeholder="6 位数字" required pattern="\d{6}" maxlength="6" title="6 位数字验证码" autocomplete="one-time-code"
+                />
+                <button
+                  type="button" class="btn btn-secondary code-send"
+                  :disabled="sendingCode || codeCountdown > 0"
+                  @click="sendCode"
+                >{{ codeBtnLabel() }}</button>
+              </div>
+              <div v-if="codeSentTip" class="code-tip">{{ codeSentTip }}</div>
             </div>
             <div class="field">
               <label class="field-label" for="reg-pwd">密码</label>
@@ -325,6 +422,14 @@ onBeforeUnmount(() => {
 }
 .type-tab:hover { color: var(--ink); }
 .type-tab.active { background: var(--canvas); color: var(--ink); box-shadow: 0 1px 3px rgba(10, 21, 48, 0.1); }
+/* 注册验证码：通道小标签 + 输入框与「获取验证码」同行 */
+.code-way { margin-bottom: 10px; padding: 3px; }
+.code-way .type-tab { font-size: 12px; padding: 6px 0; }
+.code-row { display: flex; gap: 8px; }
+.code-input { flex: 1; letter-spacing: 3px; }
+.code-send { white-space: nowrap; padding: 0 14px; font-size: 13px; font-weight: 600; }
+.code-send:disabled { opacity: 0.55; cursor: not-allowed; }
+.code-tip { margin-top: 7px; font-size: 12px; color: var(--brand-green); line-height: 1.5; }
 .aux-row { display: flex; justify-content: flex-end; margin: -4px 0 14px; }
 .forgot-link { border: none; background: transparent; padding: 0; font-size: 12.5px; font-weight: 500; color: var(--link-blue); cursor: pointer; }
 .forgot-link:hover { text-decoration: underline; }
