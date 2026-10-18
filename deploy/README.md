@@ -53,21 +53,37 @@ Variables（注意在 **Variables** 标签页，不是 Secrets；两个仓库的
 
 ### 3. 服务器：nginx 站点配置
 
-把本目录的 `nginx-rag.conf` 上传到服务器（用户端站点监听 **8082**，管理端 **8081**）：
+把本目录的 `nginx-rag.conf` 上传到服务器（用户端站点监听 **8082 + 8443(HTTPS)**，管理端 **8081**）：
 
 ```bash
 scp deploy/nginx-rag.conf root@39.96.61.195:/etc/nginx/conf.d/rag.conf
 ssh root@39.96.61.195 "nginx -t && systemctl reload nginx"
 ```
 
-并在阿里云控制台 **安全组** 放行 **8081 / 8082** 入方向（80/443 已被其他项目占用，不要动）。
+并在阿里云控制台 **安全组** 放行 **8081 / 8082 / 8443** 入方向（80/443 已被其他项目占用，不要动）。
 Django 部署后其 `ALLOWED_HOSTS` / `CSRF_TRUSTED_ORIGINS` 需包含服务器 IP。
+
+### 3.1 语音识别需要 HTTPS（自签证书）
+
+浏览器只在不安全上下文以外的源开放麦克风（getUserMedia），所以录音功能必须走 HTTPS 入口
+`https://39.96.61.195:8443`。证书为自签（无域名时 Let's Encrypt 不可用），浏览器首次访问会警告，
+点「高级 → 继续前往」即可，同一浏览器信任一次后续不再提示。重新生成证书（10 年期，含 IP SAN）：
+
+```bash
+ssh root@39.96.61.195 'mkdir -p /etc/nginx/ssl && openssl req -x509 -nodes -newkey rsa:2048 \
+  -days 3650 -keyout /etc/nginx/ssl/rag.key -out /etc/nginx/ssl/rag.crt \
+  -subj "/CN=39.96.61.195" -addext "subjectAltName=IP:39.96.61.195" \
+  && systemctl reload nginx'
+```
+
+> 换域名后：把证书换成正式签发（阿里云免费 DV 证书），nginx 里改证书路径并把
+> `VITE_*_ORIGIN` 变量改成域名即可，无需改代码。
 
 ### 4. 触发
 
 push 代码（或 Actions 页 `workflow_dispatch` 手动跑）后访问：
 
-- 用户端：`http://39.96.61.195:8082`
+- 用户端：`http://39.96.61.195:8082`（日常）/ `https://39.96.61.195:8443`（**语音识别必须用这个**，自签证书需信任一次）
 - 管理端：`http://39.96.61.195:8081`
 
 ## 日常使用
