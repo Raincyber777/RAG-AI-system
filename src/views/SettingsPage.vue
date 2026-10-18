@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 个人设置：资料 / 手机号 / 邮箱 / 头像 / 密码
- * 修改统一走后端 /auth/me/ 与 /auth/password/；手机号 / 邮箱的短信验证码为演示流程（123456）
+ * 修改统一走后端 /auth/me/ 与 /auth/password/；更换手机号 / 邮箱需绑定邮箱验证码（/auth/me/phone/、/auth/me/email/）
  * 转写、抽帧、纪要生成与问答参数统一采用系统最佳配置，不提供用户侧调整
  */
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
@@ -66,21 +66,17 @@ function showAvatarTip(t: string) {
   avatarTipTimer = window.setTimeout(() => (avatarTip.value = ''), 2600)
 }
 
-// ---------- 手机号 / 邮箱更换（短信验证码为演示流程；更换请求由后端校验占用） ----------
+// ---------- 手机号 / 邮箱更换（验证码发往账号绑定邮箱验证身份，更换请求由后端校验占用） ----------
 const PHONE_RE = /^1[3-9]\d{9}$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const DEMO_CODE = '123456'
 
-function maskPhone(p: string) {
-  return p.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')
-}
 function maskEmail(e: string) {
   const i = e.indexOf('@')
   return i <= 2 ? e : e.slice(0, 2) + '***' + e.slice(i)
 }
 
-const phone = reactive({ changing: false, value: '', code: '', error: '', sent: '', done: false })
-const email = reactive({ changing: false, value: '', code: '', error: '', sent: '', done: false })
+const phone = reactive({ changing: false, value: '', code: '', error: '', sent: '', done: false, sending: false })
+const email = reactive({ changing: false, value: '', code: '', error: '', sent: '', done: false, sending: false })
 const cooldowns = reactive({ phone: 0, email: 0 })
 const timers: Record<'phone' | 'email', number> = { phone: 0, email: 0 }
 
@@ -96,7 +92,7 @@ const phoneMsg = computed(() => {
   const v = phone.value.trim()
   if (!v) return { text: '请输入 11 位手机号', ok: false }
   if (!PHONE_RE.test(v)) return { text: '手机号格式不正确', ok: false }
-  return { text: '请填写能正常接收短信的手机号', ok: true }
+  return { text: '新手机号不能已绑定其他账号', ok: true }
 })
 const emailMsg = computed(() => {
   const v = email.value.trim()
@@ -118,23 +114,33 @@ function stopCooldown(which: 'phone' | 'email') {
 }
 
 function startPhone() {
-  Object.assign(phone, { changing: true, value: '', code: '', error: '', sent: '' })
+  Object.assign(phone, { changing: true, value: '', code: '', error: '', sent: '', sending: false })
 }
-function sendPhoneCode() {
+/** 换绑验证码统一发到账号绑定邮箱（证明是本人操作），新手机号/新邮箱在确认时由后端校验占用 */
+async function sendPhoneCode() {
   phone.error = ''
   const v = phone.value.trim()
   if (!v) { phone.error = '请输入 11 位手机号'; return }
   if (!PHONE_RE.test(v)) { phone.error = '手机号格式不正确'; return }
   if (v === userProfile.phone) { phone.error = '新手机号与当前手机号相同'; return }
-  startCooldown('phone')
-  phone.sent = `验证码已发送至 ${maskPhone(v)}（验证码：${DEMO_CODE}）`
+  if (phone.sending) return
+  phone.sending = true
+  try {
+    const res = await authApi.sendCode('email', userProfile.email, 'change_phone')
+    phone.sent = `验证码已发送至绑定邮箱 ${maskEmail(userProfile.email)}，请查收`
+    if (res.dev_code) phone.code = res.dev_code // 本地 DEBUG：验证码未真正发出，直接回填
+    startCooldown('phone')
+  } catch (e) {
+    phone.error = e instanceof ApiError ? e.message : '发送失败，请确认后端已启动'
+  } finally {
+    phone.sending = false
+  }
 }
 async function confirmPhone() {
   phone.error = ''
   if (!/^\d{6}$/.test(phone.code)) { phone.error = '请输入 6 位数字验证码'; return }
-  if (phone.code !== DEMO_CODE) { phone.error = '验证码不正确，请重新输入'; return }
   try {
-    const u = await authApi.updateMe({ phone: phone.value.trim() })
+    const u = await authApi.changePhone(phone.value.trim(), phone.code.trim())
     updateCurrentUser(u)
     cancelPhone()
     phone.done = true
@@ -144,28 +150,37 @@ async function confirmPhone() {
   }
 }
 function cancelPhone() {
-  Object.assign(phone, { changing: false, value: '', code: '', error: '', sent: '' })
+  Object.assign(phone, { changing: false, value: '', code: '', error: '', sent: '', sending: false })
   stopCooldown('phone')
 }
 
 function startEmail() {
-  Object.assign(email, { changing: true, value: '', code: '', error: '', sent: '' })
+  Object.assign(email, { changing: true, value: '', code: '', error: '', sent: '', sending: false })
 }
-function sendEmailCode() {
+async function sendEmailCode() {
   email.error = ''
   const v = email.value.trim()
   if (!v) { email.error = '请输入邮箱地址'; return }
   if (!EMAIL_RE.test(v)) { email.error = '邮箱格式不正确'; return }
   if (v === userProfile.email) { email.error = '新邮箱与当前邮箱相同'; return }
-  startCooldown('email')
-  email.sent = `验证码已发送至原邮箱 ${maskEmail(userProfile.email)}（验证码：${DEMO_CODE}）`
+  if (email.sending) return
+  email.sending = true
+  try {
+    const res = await authApi.sendCode('email', userProfile.email, 'change_email')
+    email.sent = `验证码已发送至原邮箱 ${maskEmail(userProfile.email)}，请查收`
+    if (res.dev_code) email.code = res.dev_code // 本地 DEBUG：验证码未真正发出，直接回填
+    startCooldown('email')
+  } catch (e) {
+    email.error = e instanceof ApiError ? e.message : '发送失败，请确认后端已启动'
+  } finally {
+    email.sending = false
+  }
 }
 async function confirmEmail() {
   email.error = ''
   if (!/^\d{6}$/.test(email.code)) { email.error = '请输入 6 位数字验证码'; return }
-  if (email.code !== DEMO_CODE) { email.error = '验证码不正确，请重新输入'; return }
   try {
-    const u = await authApi.updateMe({ email: email.value.trim() })
+    const u = await authApi.changeEmail(email.value.trim(), email.code.trim())
     updateCurrentUser(u)
     cancelEmail()
     email.done = true
@@ -175,7 +190,7 @@ async function confirmEmail() {
   }
 }
 function cancelEmail() {
-  Object.assign(email, { changing: false, value: '', code: '', error: '', sent: '' })
+  Object.assign(email, { changing: false, value: '', code: '', error: '', sent: '', sending: false })
   stopCooldown('email')
 }
 
@@ -299,8 +314,8 @@ async function updatePassword() {
               </p>
               <div class="code-row">
                 <input v-model="phone.code" class="input" placeholder="6 位验证码" maxlength="6" inputmode="numeric" />
-                <button class="btn btn-secondary code-btn" :disabled="cooldowns.phone > 0 || !phoneMsg.ok" @click="sendPhoneCode">
-                  {{ cooldowns.phone > 0 ? cooldowns.phone + 's 后重发' : '获取验证码' }}
+                <button class="btn btn-secondary code-btn" :disabled="cooldowns.phone > 0 || !phoneMsg.ok || phone.sending" @click="sendPhoneCode">
+                  {{ phone.sending ? '发送中…' : cooldowns.phone > 0 ? cooldowns.phone + 's 后重发' : '获取验证码' }}
                 </button>
               </div>
               <p v-if="phone.sent" class="field-hint hint-ok">{{ phone.sent }}</p>
@@ -331,8 +346,8 @@ async function updatePassword() {
               </p>
               <div class="code-row">
                 <input v-model="email.code" class="input" placeholder="6 位验证码" maxlength="6" inputmode="numeric" />
-                <button class="btn btn-secondary code-btn" :disabled="cooldowns.email > 0 || !emailMsg.ok" @click="sendEmailCode">
-                  {{ cooldowns.email > 0 ? cooldowns.email + 's 后重发' : '获取验证码' }}
+                <button class="btn btn-secondary code-btn" :disabled="cooldowns.email > 0 || !emailMsg.ok || email.sending" @click="sendEmailCode">
+                  {{ email.sending ? '发送中…' : cooldowns.email > 0 ? cooldowns.email + 's 后重发' : '获取验证码' }}
                 </button>
               </div>
               <p v-if="email.sent" class="field-hint hint-ok">{{ email.sent }}</p>
