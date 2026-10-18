@@ -16,8 +16,10 @@ const GUEST_KEY = 'zy_guest'
 const ROLE_KEY = 'zy_role'
 const USER_KEY = 'zy_user'
 
-/** 管理端地址（分权：管理员账号登录后先进入管理端；管理端也可一键回到用户端） */
-export const ADMIN_ORIGIN = 'http://localhost:5174'
+/** 管理端地址（分权：管理员账号登录后先进入管理端；管理端也可一键回到用户端）
+ * 本地开发取 .env.development（5174）；生产构建由 CI 注入 VITE_ADMIN_ORIGIN（如 http://服务器IP:8081） */
+export const ADMIN_ORIGIN =
+  (import.meta.env.VITE_ADMIN_ORIGIN as string | undefined) || window.location.origin
 
 /** 当前账号角色：普通用户 / 管理员 / 超级管理员（管理员账号同样可使用用户端全部功能） */
 export const role = ref<Role>((localStorage.getItem(ROLE_KEY) as Role) || 'user')
