@@ -90,17 +90,19 @@ router.beforeEach((to) => {
     remoteLogoutCleanup()
     return { name: 'login', query: {} }
   }
-  if (to.query.sso === '1' && !localStorage.getItem('zy_token')) {
+  if (to.query.sso === '1') {
     const q = to.query
-    const ok = acceptUserSso({
-      n: typeof q.n === 'string' ? q.n : undefined,
-      e: typeof q.e === 'string' ? q.e : undefined,
-      r: typeof q.r === 'string' ? q.r : undefined,
-      t: typeof q.t === 'string' ? q.t : undefined,
-      rt: typeof q.rt === 'string' ? q.rt : undefined,
-    })
-    // 去除参数重入；缺 token 的无效 sso 按未登录处理
-    return ok ? { path: to.path, replace: true } : { name: 'login' }
+    const pick = (k: string) => (typeof q[k] === 'string' ? (q[k] as string) : undefined)
+    const t = pick('t')
+    // 管理端跳入且带 token：直接建立会话（覆盖本地旧会话，残留失效 token 借此自愈）
+    if (t && acceptUserSso({ n: pick('n'), e: pick('e'), r: pick('r'), t, rt: pick('rt') })) {
+      return { path: to.path, replace: true }
+    }
+    // 缺 token 的 sso：本端已有会话则去掉参数继续（不要求重登），否则回登录页
+    if (!t && localStorage.getItem('zy_token')) {
+      return { path: to.path, query: { ...q, sso: undefined, n: undefined, e: undefined, r: undefined }, replace: true }
+    }
+    return { name: 'login' }
   }
   const authed = !!localStorage.getItem('zy_token') || !!localStorage.getItem('zy_guest')
   if (!authed && to.name !== 'login') return { name: 'login' }

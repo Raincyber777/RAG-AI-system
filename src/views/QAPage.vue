@@ -7,6 +7,9 @@
  * 回答为前端演示，接入真实模型后仅需替换 runStages / streamAnswer 中的回调
  */
 import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+
+// 组件名固定：AppLayout 的 keep-alive include 依赖它，路由切走再回来保持对话现场
+defineOptions({ name: 'QAPage' })
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import SparkMark from '@/components/SparkMark.vue'
@@ -497,7 +500,9 @@ let askPromise: Promise<void> | null = null
 
 function send() {
   const text = input.value.trim()
-  if ((!text && !attachments.value.length) || isTyping.value || isStreaming.value || !activeSessionId.value) return
+  if ((!text && !attachments.value.length) || isTyping.value || isStreaming.value) return
+  // 没有选中对话时自动新建一条再发送（不必先点「新增对话」）
+  if (!activeSessionId.value) createSession()
 
   messagesFor(activeSessionId.value).push({
     id: 'u' + Date.now(),

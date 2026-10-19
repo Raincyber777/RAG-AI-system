@@ -177,7 +177,12 @@ function guestDrop(e: DragEvent) {
 
     <!-- 内容区 -->
     <main class="content">
-      <router-view />
+      <!-- 问答页 keep-alive：跳转其他页面再回来保持对话现场（选中的会话 / 消息 / 输入框内容） -->
+      <router-view v-slot="{ Component }">
+        <keep-alive include="QAPage">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
 
     <!-- 退出登录确认弹窗（游客无账号：文案更直接，只问是否确认退出） -->
