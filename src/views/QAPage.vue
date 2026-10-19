@@ -14,7 +14,7 @@ import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import SparkMark from '@/components/SparkMark.vue'
 import { classNotes, ensureNotesLoaded } from '@/store/study'
-import { isGuest } from '@/store/auth'
+import { currentUser, isGuest } from '@/store/auth'
 import { qaApi, streamAsk, type ApiQaRecord } from '@/api'
 import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
 import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
@@ -41,6 +41,30 @@ const activeSessionId = ref('')
 const SIDEBAR_KEY = 'zy_qa_sidebar_open'
 const sessionsOpen = ref(localStorage.getItem(SIDEBAR_KEY) !== '0')
 watch(sessionsOpen, (v) => localStorage.setItem(SIDEBAR_KEY, v ? '1' : '0'))
+
+// ---------- 自由对话会话持久化（按账号隔离） ----------
+// 会话标识 'qa'+时间戳 同时作为 QaRecord.session_ref 存后端：刷新后列表从 localStorage 恢复，
+// 消息进会话时按 session 从 /api/qa/ 拉回（loadHistory）。课内会话随纪要自动重建，不落盘。
+const uidKey = () => `${currentUser.value?.id ?? 'guest'}`
+
+function loadFreeSessions(): QaSession[] {
+  try {
+    const arr = JSON.parse(localStorage.getItem(`zy_qa_sessions:${uidKey()}`) || '[]') as QaSession[]
+    return Array.isArray(arr) ? arr.filter((s) => s && typeof s.id === 'string' && typeof s.title === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function persistFreeSessions() {
+  localStorage.setItem(`zy_qa_sessions:${uidKey()}`, JSON.stringify(qaSessions.value.filter((s) => !s.noteId)))
+}
+
+watch(qaSessions, persistFreeSessions, { deep: true })
+
+watch(activeSessionId, (v) => {
+  localStorage.setItem(`zy_qa_active:${uidKey()}`, v || '')
+})
 
 // 工作台新完成的纪要 → 自动出现为一条对话
 watch(
@@ -213,11 +237,13 @@ function recordToMessages(r: ApiQaRecord): ChatMessage[] {
 async function loadHistory(id: string) {
   if (loadedSessions.has(id) || isGuest.value) return
   const s = qaSessions.value.find((x) => x.id === id)
-  if (!s?.noteId) return // 自由对话暂无历史
+  if (!s) return
   loadedSessions.add(id)
   try {
-    const records = await qaApi.list(s.noteId)
-    messagesFor(id).push(...records.flatMap(recordToMessages))
+    // 课内会话按纪要拉取；自由对话按会话标识拉取（后端 QaRecord.session_ref）
+    const records = await (s.noteId ? qaApi.list(s.noteId) : qaApi.list(undefined, id))
+    // 后端按时间倒序返回，聊天气泡需正序（与实时追问的追加顺序一致）
+    messagesFor(id).push(...records.reverse().flatMap(recordToMessages))
     if (id === activeSessionId.value) scrollToBottom(true)
   } catch {
     loadedSessions.delete(id) // 加载失败：切回该会话时可重试
@@ -511,6 +537,9 @@ function send() {
     attachments: attachments.value.length ? (attachments.value.map((a) => ({ ...a })) as ChatAttachment[]) : undefined,
     time: now(),
   })
+  // 首条提问自动作为会话标题（手动重命名过的不覆盖），刷新后恢复列表时也好辨认
+  const cur = qaSessions.value.find((x) => x.id === activeSessionId.value)
+  if (cur && cur.title === '新的对话') cur.title = text.slice(0, 18)
   // 附件随消息发出（预览地址由消息继续持有展示），输入区清空
   attachments.value = []
   input.value = ''
@@ -529,7 +558,8 @@ function askQuestion(text: string) {
   }
   const buf: AskBuf = { text: '', error: null, record: null }
   askBuf = buf
-  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf)
+  // 会话标识随提问入库（session_ref）：刷新后按会话拉回历史
+  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined)
     .then((record) => {
       buf.record = record
       if (record) {
@@ -748,6 +778,9 @@ onMounted(async () => {
       })
       .catch(() => {})
   }
+  // 恢复本地持久化的自由对话会话（课内会话由纪要自动重建，不落盘）
+  const restored = loadFreeSessions()
+  if (restored.length) qaSessions.value = [...restored, ...qaSessions.value]
   // note 对话按最新纪要列表补齐（watch 为异步触发，这里先行补齐一次）
   for (const n of classNotes.value) {
     if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
@@ -756,8 +789,11 @@ onMounted(async () => {
   }
   const q = route.query.note
   const id = typeof q === 'string' ? q : ''
+  const savedActive = localStorage.getItem(`zy_qa_active:${uidKey()}`) || ''
   const exists = qaSessions.value.some((s) => s.id === id)
-  activeSessionId.value = exists ? id : (qaSessions.value[0]?.id ?? '')
+  activeSessionId.value = exists
+    ? id
+    : (qaSessions.value.some((x) => x.id === savedActive) ? savedActive : (qaSessions.value[0]?.id ?? ''))
   if (activeSessionId.value) void loadHistory(activeSessionId.value)
   nextTick(() => scrollToBottom(true))
 })

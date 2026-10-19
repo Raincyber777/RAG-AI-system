@@ -126,12 +126,21 @@ export interface ApiQaRecord {
 }
 
 export const qaApi = {
-  list: (noteId?: string) =>
-    listAll<ApiQaRecord>('/qa/', noteId ? { note: noteId } : {}),
-  ask: (noteId: string | null, question: string) =>
+  /** 我的问答历史：课内会话按纪要（note）过滤；自由对话按会话标识（session_ref）过滤 */
+  list: (noteId?: string, sessionRef?: string) => {
+    const params: Record<string, string> = {}
+    if (noteId) params.note = noteId
+    if (sessionRef) params.session = sessionRef
+    return listAll<ApiQaRecord>('/qa/', params)
+  },
+  ask: (noteId: string | null, question: string, sessionRef?: string) =>
     request<ApiQaRecord>('/qa/ask/', {
       method: 'POST',
-      data: { ...(noteId ? { note_id: Number(noteId) } : {}), question },
+      data: {
+        ...(noteId ? { note_id: Number(noteId) } : {}),
+        question,
+        ...(sessionRef ? { session_ref: sessionRef } : {}),
+      },
     }),
   like: (id: number) => request<ApiQaRecord>(`/qa/${id}/like/`, { method: 'POST' }),
   /** 欢迎页个性化追问建议（按用户近期提问生成，失败由页面回退默认文案） */
@@ -147,6 +156,7 @@ export async function streamAsk(
   noteId: string | null,
   question: string,
   buf: { text: string; error: string | null },
+  sessionRef?: string,
 ): Promise<ApiQaRecord | null> {
   let res: Response
   try {
@@ -157,7 +167,11 @@ export async function streamAsk(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${getToken()}`,
       },
-      body: JSON.stringify({ ...(noteId ? { note_id: Number(noteId) } : {}), question }),
+      body: JSON.stringify({
+        ...(noteId ? { note_id: Number(noteId) } : {}),
+        question,
+        ...(sessionRef ? { session_ref: sessionRef } : {}),
+      }),
     })
   } catch {
     buf.error = '网络异常，请稍后再试'
