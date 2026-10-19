@@ -1213,7 +1213,7 @@ onBeforeUnmount(() => {
 /* 消息区滚动条：常显（8px 带轨道），右内边距相应收窄保持视觉对称；
    悬浮球的活动范围已避开这 8px 槽位，不会遮挡滚动条 */
 .messages {
-  flex: 1; min-width: 0; overflow-y: auto;
+  flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden;
   padding: 26px 16px 26px 24px;
   scrollbar-gutter: stable; scrollbar-width: auto;
   scrollbar-color: var(--stone) var(--hairline-soft);
@@ -1256,6 +1256,7 @@ onBeforeUnmount(() => {
 .bubble-user {
   max-width: 72%; background: var(--primary); color: #fff;
   padding: 12px 16px; border-radius: 14px 14px 4px 14px; line-height: 1.6; white-space: pre-wrap;
+  overflow-wrap: anywhere; /* 用户粘贴长链接同样不撑破气泡 */
 }
 
 .row-ai { margin-bottom: 26px; }
@@ -1265,6 +1266,8 @@ onBeforeUnmount(() => {
   background: var(--surface-soft); border: 1px solid var(--hairline-soft);
   border-radius: 14px; padding: 14px 18px;
   line-height: 1.7; white-space: pre-wrap; color: var(--charcoal); font-size: 14.5px;
+  /* 长链接等不可断字符串在气泡内强制换行，避免溢出气泡边框 */
+  overflow-wrap: anywhere;
 }
 :deep(.cite-mark) {
   color: var(--primary); font-weight: 600; cursor: pointer; font-size: 11px;
@@ -1308,10 +1311,11 @@ onBeforeUnmount(() => {
 .cite-link {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 11.5px; font-weight: 600; color: var(--link-blue); text-decoration: none;
+  overflow-wrap: anywhere;
 }
 .cite-link:hover { text-decoration: underline; }
 .cite-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cite-snippet { color: var(--slate); line-height: 1.6; margin-bottom: 9px; }
+.cite-snippet { color: var(--slate); line-height: 1.6; margin-bottom: 9px; overflow-wrap: anywhere; }
 .cite-score { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--steel); }
 .score-segs { display: inline-flex; gap: 2px; flex: 1; }
 .score-segs i { flex: 1; height: 6px; border-radius: 1.5px; background: var(--hairline); }
