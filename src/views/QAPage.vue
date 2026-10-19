@@ -713,14 +713,16 @@ function citeMarkText(c: Citation) {
 }
 
 // ---------- 建议 ----------
-// 兜底推荐：游客态 / 接口失败 / 后端暂无个性化数据时使用
-const FALLBACK_SUGGESTIONS = ['帮我总结上一节课的重点', '泰勒展开有哪些易错点？', '进程和线程的区别是什么？', '二叉树的四种遍历怎么背？']
-// 个性化追问：登录后由后端按「近期提问」生成（后端未配模型 key 时为规则版），失败静默回退兜底
+// 通用推荐：无纪要账号 / 游客态 / 接口失败时使用——全部不依赖课堂资料，走联网通用问答
+const GENERAL_SUGGESTIONS = ['用通俗的话解释什么是机器学习', '帮我制定高数期末复习计划', '英语四级作文有哪些万能句型？', '什么是毕达哥拉斯定理？']
+const hasNotes = computed(() => doneNotes.value.length > 0)
+// 个性化追问：登录后由后端按「近期提问」生成（后端未配模型 key 时为规则版），失败静默回退通用推荐
 const personalized = ref<string[] | null>(null)
 const suggestions = computed(() => {
   const t = activeNote.value?.title
   if (t) return [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
-  return personalized.value ?? FALLBACK_SUGGESTIONS
+  if (!hasNotes.value) return GENERAL_SUGGESTIONS
+  return personalized.value ?? GENERAL_SUGGESTIONS
 })
 
 function suggestionClick(q: string) {
@@ -863,8 +865,8 @@ onBeforeUnmount(() => {
           <div v-if="!activeMessages.length" class="welcome fade-in">
             <!-- 欢迎标：logo 同款四角星（白紫渐变流动 + 边缘水晶扫光） -->
             <div class="welcome-logo"><SparkMark :size="36" /></div>
-            <h2 class="h2">针对课堂内容，想问点什么？</h2>
-            <p class="text-md muted">回答基于课堂纪要、转写稿与板书生成，每句话都能溯源到录音时间点或图片。</p>
+            <h2 class="h2">{{ hasNotes ? '针对课堂内容，想问点什么？' : '有问题，尽管问' }}</h2>
+            <p class="text-md muted">{{ hasNotes ? '回答基于课堂纪要、转写稿与板书生成，每句话都能溯源到录音时间点或图片。' : '还没上传课堂资料也没关系：回答结合全网资料生成，并标注来源与依据。' }}</p>
             <div class="sug-grid">
               <button v-for="q in suggestions" :key="q" class="sug-card" @click="suggestionClick(q)">
                 <AppIcon name="chat" :size="15" />
@@ -1066,7 +1068,7 @@ onBeforeUnmount(() => {
             <textarea
               v-model="input"
               class="composer-input"
-              :placeholder="listening ? '正在聆听，请说话…' : '向课堂知识库提问…（Enter 发送 / Shift+Enter 换行）'"
+              :placeholder="listening ? '正在聆听，请说话…' : (hasNotes ? '向课堂知识库提问…' : '有任何问题都可以问…') + '（Enter 发送 / Shift+Enter 换行）'"
               rows="1"
               @keydown.enter.exact.prevent="send"
             ></textarea>
@@ -1092,7 +1094,7 @@ onBeforeUnmount(() => {
         <input ref="attachInput" type="file" multiple hidden :accept="attachAccept" @change="onAttachChange" />
         <p v-if="attachTip" class="composer-tip attach-tip"><AppIcon name="alert" :size="12" /> {{ attachTip }}</p>
         <p v-else-if="voiceTip" class="composer-tip voice-tip">{{ voiceTip }}</p>
-        <p v-else class="composer-tip">回答由 AI 基于课堂纪要生成，请以引用原文为准</p>
+        <p v-else class="composer-tip">{{ hasNotes ? '回答由 AI 基于课堂纪要生成，请以引用原文为准' : '回答由 AI 结合全网资料生成，并标注来源与依据' }}</p>
       </footer>
     </section>
 
