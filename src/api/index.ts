@@ -123,7 +123,14 @@ export interface ApiQaRecord {
   followups: string[]
   liked: boolean
   created_at: string
+  /** 审核标记：political 政治引导 / health_block 禁忌拦截（命中时前端弹安全提醒） */
+  moderation?: 'political' | 'health_block' | ''
+  /** 本次提问更新了健康档案（前端 toast「已记录你的健康禁忌」） */
+  profile_updated?: boolean
 }
+
+/** 按消息的反馈埋点动作（点赞 / 点踩 / 复制 / 重新提问 / 停留时长） */
+export type QaFeedbackAction = 'like' | 'dislike' | 'copy' | 'reask' | 'dwell'
 
 export const qaApi = {
   /** 我的问答历史：课内会话按纪要（note）过滤；自由对话按会话标识（session_ref）过滤 */
@@ -143,19 +150,27 @@ export const qaApi = {
       },
     }),
   like: (id: number) => request<ApiQaRecord>(`/qa/${id}/like/`, { method: 'POST' }),
+  /** 反馈埋点：驱动片段权重升降与训练样本筛选，失败静默（不影响浏览） */
+  feedback: (id: number, action: QaFeedbackAction, value?: string) =>
+    request<{ action: QaFeedbackAction; liked: boolean }>(`/qa/${id}/feedback/`, {
+      method: 'POST',
+      data: { action, ...(value ? { value } : {}) },
+    }),
   /** 欢迎页个性化追问建议（按用户近期提问生成，失败由页面回退默认文案） */
   suggestions: () => request<{ suggestions: string[] }>('/qa/suggestions/'),
 }
 
 /**
  * SSE 流式问答：回答增量实时写入 buf.text（event: delta），结束返回完整问答记录（event: done）。
+ * 内容被安全审核拦截时下发 event: blocked（category + message）：message 写入 buf.text 展示拦截文案，
+ * buf.blocked 记下类别供页面弹安全提醒，返回 null（无记录可入库）。
  * 接口报错（如未完成纪要 400）写入 buf.error；网络 / 流异常时也以 buf.error 收尾，
  * 页面凭 buf 已有内容与错误态渲染，不再二次请求。
  */
 export async function streamAsk(
   noteId: string | null,
   question: string,
-  buf: { text: string; error: string | null },
+  buf: { text: string; error: string | null; blocked?: string | null },
   sessionRef?: string,
 ): Promise<ApiQaRecord | null> {
   let res: Response
@@ -208,6 +223,11 @@ export async function streamAsk(
         const payload = JSON.parse(dataStr)
         if (name === 'delta' && typeof payload.text === 'string') buf.text += payload.text
         else if (name === 'done') return payload as ApiQaRecord
+        else if (name === 'blocked') {
+          buf.blocked = typeof payload.category === 'string' ? payload.category : 'blocked'
+          if (typeof payload.message === 'string') buf.text += payload.message
+          return null
+        }
       } catch {
         // 跳过无法解析的帧
       }

@@ -6,7 +6,7 @@
  * - 提问记录导航：千问式右侧悬浮面板，悬停展开、点击定位，固定在滚动条左侧不遮挡
  * 回答为前端演示，接入真实模型后仅需替换 runStages / streamAnswer 中的回调
  */
-import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount, onDeactivated } from 'vue'
 
 // 组件名固定：AppLayout 的 keep-alive include 依赖它，路由切走再回来保持对话现场
 defineOptions({ name: 'QAPage' })
@@ -16,6 +16,8 @@ import SparkMark from '@/components/SparkMark.vue'
 import { classNotes, ensureNotesLoaded } from '@/store/study'
 import { currentUser, isGuest } from '@/store/auth'
 import { qaApi, streamAsk, type ApiQaRecord } from '@/api'
+import { BASE, getToken } from '@/api/http'
+import SafetyModal, { type SafetyNotice } from '@/components/SafetyModal.vue'
 import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
 import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
@@ -519,14 +521,53 @@ function revokeAllAttachPreviews() {
 interface AskBuf {
   text: string
   error: string | null
+  /** 审核拦截帧类别（blocked）：命中时气泡展示拦截文案并弹安全提醒 */
+  blocked: string | null
   record: ApiQaRecord | null
 }
 let askBuf: AskBuf | null = null
 let askPromise: Promise<void> | null = null
 
+// ---------- 反馈埋点 / 安全提醒 ----------
+/** 安全提醒弹窗（违规拦截 / 政治引导 / 健康禁忌） */
+const safetyNotice = ref<SafetyNotice | null>(null)
+/** 健康档案更新提示（composer 内联 toast，attachTip 同款模式） */
+const healthTip = ref('')
+let healthTipTimer: number | null = null
+function showHealthTip() {
+  healthTip.value = '已记录你的健康禁忌，涉及相关建议时会先做安全核查'
+  if (healthTipTimer) window.clearTimeout(healthTipTimer)
+  healthTipTimer = window.setTimeout(() => { healthTip.value = '' }, 3200)
+}
+/** 最近一条完整展示的回答：下次发送 / 离开页面时上报停留时长（≥5s 才算有效浏览） */
+const lastAnswer = ref<{ qaId: number; shownAt: number } | null>(null)
+function reportDwell() {
+  const la = lastAnswer.value
+  lastAnswer.value = null
+  if (!la) return
+  const secs = Math.round((Date.now() - la.shownAt) / 1000)
+  if (secs < 5) return
+  void qaApi.feedback(la.qaId, 'dwell', String(secs)).catch(() => {})
+}
+/** 页面关闭 / 刷新时的停留上报：fetch keepalive 保证请求发出 */
+function reportDwellKeepalive() {
+  const la = lastAnswer.value
+  lastAnswer.value = null
+  if (!la) return
+  const secs = Math.round((Date.now() - la.shownAt) / 1000)
+  if (secs < 5) return
+  void fetch(`${BASE}/qa/${la.qaId}/feedback/`, {
+    method: 'POST',
+    keepalive: true,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ action: 'dwell', value: String(secs) }),
+  }).catch(() => {})
+}
+
 function send() {
   const text = input.value.trim()
   if ((!text && !attachments.value.length) || isTyping.value || isStreaming.value) return
+  reportDwell() // 上一条回答的停留时长在新提问前结算
   // 没有选中对话时自动新建一条再发送（不必先点「新增对话」）
   if (!activeSessionId.value) createSession()
 
@@ -556,7 +597,7 @@ function askQuestion(text: string) {
     askBuf = null
     return
   }
-  const buf: AskBuf = { text: '', error: null, record: null }
+  const buf: AskBuf = { text: '', error: null, blocked: null, record: null }
   askBuf = buf
   // 会话标识随提问入库（session_ref）：刷新后按会话拉回历史
   askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined)
@@ -633,6 +674,8 @@ async function streamAnswer() {
     if (buf.error) {
       msg.content = `回答生成失败：${buf.error}`
     } else {
+      // 审核拦截帧：无问答记录，气泡展示拦截文案并弹安全提醒
+      if (buf.blocked) safetyNotice.value = { kind: 'blocked', text: buf.text }
       const r = buf.record
       if (r) {
         msg.citations = r.references.map((ref, i) => {
@@ -650,6 +693,14 @@ async function streamAnswer() {
         msg.liked = r.liked
         msg.qaId = r.id
         if (r.followups?.length) msg.followups = r.followups
+        // 政治引导 / 健康禁忌拦截：回答带审核标记，弹对应安全提醒
+        if (r.moderation === 'political' || r.moderation === 'health_block') {
+          safetyNotice.value = { kind: r.moderation, text: r.answer }
+        }
+        // 本次提问更新了健康档案：内联提示确认
+        if (r.profile_updated) showHealthTip()
+        // 停留时长计时起点：下次发送 / 离开页面上报
+        lastAnswer.value = { qaId: r.id, shownAt: Date.now() }
       }
     }
     isStreaming.value = false
@@ -663,6 +714,9 @@ function regenerate(msg: ChatMessage) {
   const list = messagesFor(activeSessionId.value)
   const idx = list.indexOf(msg)
   const question = [...list.slice(0, idx)].reverse().find((m) => m.role === 'user')?.content ?? ''
+  // 重新提问埋点：对上一条回答上报 reask（驱动片段降权与知识库缺口）
+  if (msg.qaId) void qaApi.feedback(msg.qaId, 'reask', question.slice(0, 200)).catch(() => {})
+  reportDwell()
   list.splice(idx, 1)
   askQuestion(question) // 重新提问（后端生成一条新记录）
 }
@@ -670,14 +724,18 @@ function regenerate(msg: ChatMessage) {
 function toggleLike(msg: ChatMessage, liked: boolean) {
   msg.liked = liked ? !msg.liked : false
   msg.disliked = !liked ? !msg.disliked : false
-  // 点赞同步到后端（后端为切换语义）；点踩仅本地记录
+  // 👍👎 都上报反馈埋点（驱动片段加权 / 降权与训练样本筛选），后端回同步点赞态
   if (msg.qaId) {
-    void qaApi.like(msg.qaId).then((r) => { msg.liked = r.liked }).catch(() => {})
+    void qaApi.feedback(msg.qaId, liked ? 'like' : 'dislike')
+      .then((r) => { msg.liked = r.liked })
+      .catch(() => {})
   }
 }
 
 function copyMessage(msg: ChatMessage) {
   navigator.clipboard?.writeText(msg.content)
+  // 复制埋点：视为有用信号，驱动片段加权
+  if (msg.qaId) void qaApi.feedback(msg.qaId, 'copy').catch(() => {})
 }
 
 // ---------- 语音输入（Web Speech API，需 HTTPS） ----------
@@ -769,6 +827,7 @@ function now() {
 onMounted(async () => {
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKey)
+  window.addEventListener('pagehide', reportDwellKeepalive)
   await ensureNotesLoaded()
   // 拉取个性化追问建议（游客态跳过；失败静默保留兜底文案）
   if (!isGuest.value) {
@@ -803,9 +862,16 @@ onBeforeUnmount(() => {
   if (streamTimer) window.clearInterval(streamTimer)
   if (flashTimer) window.clearTimeout(flashTimer)
   if (attachTipTimer) window.clearTimeout(attachTipTimer)
+  if (healthTipTimer) window.clearTimeout(healthTipTimer)
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('keydown', onDocKey)
+  window.removeEventListener('pagehide', reportDwellKeepalive)
   revokeAllAttachPreviews()
+})
+
+// keep-alive 切走时结算停留时长（组件不销毁，onBeforeUnmount 不触发）
+onDeactivated(() => {
+  reportDwell()
 })
 </script>
 
@@ -1130,6 +1196,7 @@ onBeforeUnmount(() => {
         <input ref="attachInput" type="file" multiple hidden :accept="attachAccept" @change="onAttachChange" />
         <p v-if="attachTip" class="composer-tip attach-tip"><AppIcon name="alert" :size="12" /> {{ attachTip }}</p>
         <p v-else-if="voiceTip" class="composer-tip voice-tip">{{ voiceTip }}</p>
+        <p v-else-if="healthTip" class="composer-tip health-tip"><AppIcon name="shield" :size="12" /> {{ healthTip }}</p>
         <p v-else class="composer-tip">{{ hasNotes ? '回答由 AI 基于课堂纪要生成，请以引用原文为准' : '回答由 AI 结合全网资料生成，并标注来源与依据' }}</p>
       </footer>
     </section>
@@ -1145,6 +1212,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 安全提醒弹窗：违规拦截 / 政治引导 / 健康禁忌 -->
+    <SafetyModal :notice="safetyNotice" @close="safetyNotice = null" />
   </div>
 </template>
 

@@ -177,9 +177,10 @@ function guestDrop(e: DragEvent) {
 
     <!-- 内容区 -->
     <main class="content">
-      <!-- 问答页 keep-alive：跳转其他页面再回来保持对话现场（选中的会话 / 消息 / 输入框内容） -->
+      <!-- 问答页 / 课堂纪要工作台 keep-alive：跳转其他页面再回来保持现场
+           （问答：会话与输入内容；工作台：已选材料 / 生成进度 / 流式渲染进度） -->
       <router-view v-slot="{ Component }">
-        <keep-alive include="QAPage">
+        <keep-alive include="QAPage,StudioPage">
           <component :is="Component" />
         </keep-alive>
       </router-view>

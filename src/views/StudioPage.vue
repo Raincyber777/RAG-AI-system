@@ -5,8 +5,11 @@
  * 右：结构化纪要流式渲染（主题逐字 → 其余章节逐条浮现）+ 引用溯源卡片
  * 处理流程为前端演示（定时器模拟），接入真实模型后仅需替换 runSteps / startStreaming 中的回调
  */
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+
+// 组件名固定：AppLayout 的 keep-alive include 依赖它，路由切走再回来保持生成现场
+defineOptions({ name: 'StudioPage' })
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
 import { addClassNote, findNote, courseList, addCourse, classNotes, removeCourse, renameCourse, ensureNotesLoaded, noteFromApi } from '@/store/study'
@@ -451,6 +454,8 @@ function updateNoteRef(id: string) {
 
 function startGenerate() {
   if (!canStart.value) return
+  // 清除可能残留的回看 query：生成新纪要后从其他页面返回时应保持新现场，而非误切回看旧纪要
+  if (route.query.note) router.replace({ path: '/studio' })
   clearAllTimers()
   themeShown.value = ''
   headersShown.value = []
@@ -573,26 +578,39 @@ function goQA() {
 }
 
 // ---------- 回看已有纪要（/studio?note=id） ----------
-onMounted(async () => {
+/** 按 id 定位回看目标并填充回看态；纪要不存在时保持当前状态不动 */
+async function showNoteFromQuery(id: string | null) {
   await ensureNotesLoaded() // 纪要列表来自后端，异步加载完成后才能定位回看目标
+  const exists = findNote(id)
+  if (!exists) return
+  note.value = exists
+  savedId.value = exists.id
+  classTitle.value = exists.title
+  if (!courseList.value.includes(exists.course)) addCourse(exists.course)
+  courseName.value = exists.course
+  genState.value = 'done'
+  themeShown.value = exists.theme
+  headersShown.value = ['points', 'definitions', 'emphasized']
+  for (const k of Object.keys(itemsShown)) itemsShown[k] = 999
+  const fake: InputFile[] = []
+  if (exists.duration.startsWith('录音')) fake.push({ id: 'f-a', name: '课堂录音.m4a', kind: 'audio', size: '38.2 MB' })
+  if (exists.keyframes > 0) fake.push({ id: 'f-i', name: '板书照片 ×' + Math.max(1, Math.round(exists.keyframes / 2)), kind: 'image', size: '12.4 MB' })
+  steps.value = buildSteps(fake.length ? fake : [{ id: 'f-i', name: '板书照片', kind: 'image', size: '' }])
+  steps.value = steps.value.map((s) => ({ ...s, status: 'done' as StepStatus, dur: '2.0s' }))
+}
+
+onMounted(() => {
   const id = route.query.note
-  const exists = findNote(typeof id === 'string' ? id : null)
-  if (exists) {
-    note.value = exists
-    savedId.value = exists.id
-    classTitle.value = exists.title
-    if (!courseList.value.includes(exists.course)) addCourse(exists.course)
-    courseName.value = exists.course
-    genState.value = 'done'
-    themeShown.value = exists.theme
-    headersShown.value = ['points', 'definitions', 'emphasized']
-    for (const k of Object.keys(itemsShown)) itemsShown[k] = 999
-    const fake: InputFile[] = []
-    if (exists.duration.startsWith('录音')) fake.push({ id: 'f-a', name: '课堂录音.m4a', kind: 'audio', size: '38.2 MB' })
-    if (exists.keyframes > 0) fake.push({ id: 'f-i', name: '板书照片 ×' + Math.max(1, Math.round(exists.keyframes / 2)), kind: 'image', size: '12.4 MB' })
-    steps.value = buildSteps(fake.length ? fake : [{ id: 'f-i', name: '板书照片', kind: 'image', size: '' }])
-    steps.value = steps.value.map((s) => ({ ...s, status: 'done' as StepStatus, dur: '2.0s' }))
-  }
+  void showNoteFromQuery(typeof id === 'string' ? id : null)
+})
+
+// keep-alive 从其他页面返回：带 ?note= 回看参数时切换到目标纪要；
+// 无参数（侧边栏直接点回本页）原样保留离开前的进度，生成进行中也不打断
+onActivated(() => {
+  if (genState.value === 'running' || genState.value === 'streaming') return
+  const id = route.query.note
+  if (typeof id !== 'string') return
+  void showNoteFromQuery(id)
 })
 
 onBeforeUnmount(() => {
