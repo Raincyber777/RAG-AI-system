@@ -222,6 +222,7 @@ export async function streamAsk(
       try {
         const payload = JSON.parse(dataStr)
         if (name === 'delta' && typeof payload.text === 'string') buf.text += payload.text
+        else if (name === 'replace' && typeof payload.text === 'string') buf.text = payload.text
         else if (name === 'done') return payload as ApiQaRecord
         else if (name === 'blocked') {
           buf.blocked = typeof payload.category === 'string' ? payload.category : 'blocked'

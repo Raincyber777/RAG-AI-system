@@ -19,7 +19,7 @@ import { qaApi, streamAsk, type ApiQaRecord } from '@/api'
 import { BASE, getToken } from '@/api/http'
 import SafetyModal, { type SafetyNotice } from '@/components/SafetyModal.vue'
 import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
-import { UPLOAD_ACCEPT, UPLOAD_KIND_META, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
+import { UPLOAD_KIND_META, UPLOAD_MAX_MB, detectUploadKind, formatFileSize, uploadAcceptAttr, type UploadKind } from '@/utils/uploadFormats'
 
 const route = useRoute()
 
@@ -385,14 +385,6 @@ interface AttachItem {
 }
 const MAX_ATTACH = 8
 
-const ATTACH_MENU: { kind: AttachKind; label: string; hint: string }[] = [
-  { kind: 'image', label: '上传图片', hint: 'jpg / png / webp / gif' },
-  { kind: 'ppt', label: '上传 PPT', hint: 'ppt / pptx 演示文稿' },
-  { kind: 'audio', label: '上传音频', hint: 'mp3 / wav / m4a 等' },
-  { kind: 'video', label: '上传视频', hint: 'mp4 / mov / mkv 等' },
-  { kind: 'doc', label: '更多格式文档', hint: 'pdf / word / excel / 压缩包等' },
-]
-
 const attachments = ref<AttachItem[]>([])
 const attachMenuOpen = ref(false)
 const attachMenuRoot = ref<HTMLElement>()
@@ -416,13 +408,13 @@ function closeAttachMenu() {
   attachMenuOpen.value = false
 }
 
-function pickAttach(kind: AttachKind) {
+function pickAttach() {
   if (attachments.value.length >= MAX_ATTACH) {
     flashAttachTip(`最多同时上传 ${MAX_ATTACH} 个文件，请先移除部分附件`)
     closeAttachMenu()
     return
   }
-  attachAccept.value = UPLOAD_ACCEPT[kind]
+  attachAccept.value = uploadAcceptAttr   // 全部支持格式合并过滤，选中后按扩展名归类校验
   closeAttachMenu()
   nextTick(() => attachInput.value?.click())
 }
@@ -436,6 +428,8 @@ function handleAttachFiles(list: FileList | null | undefined) {
   if (!list) return
   let accepted = 0
   let dupCount = 0
+  let badFormat = ''
+  let tooBig = ''
   for (const f of Array.from(list)) {
     // 最多同时添加 MAX_ATTACH 个附件（相同或不同格式合计），超出部分给出提示
     if (attachments.value.length >= MAX_ATTACH) {
@@ -443,7 +437,14 @@ function handleAttachFiles(list: FileList | null | undefined) {
       break
     }
     const kind = detectUploadKind(f.name)
-    if (!kind) continue
+    if (!kind) {
+      badFormat = badFormat ? `${badFormat}、${f.name}` : f.name
+      continue
+    }
+    if (f.size > UPLOAD_MAX_MB[kind] * 1024 * 1024) {
+      tooBig = tooBig ? `${tooBig}、${f.name}` : f.name
+      continue
+    }
     if (attachments.value.some((x) => x.name === f.name && x.size === formatFileSize(f.size))) {
       dupCount++
       continue
@@ -457,8 +458,10 @@ function handleAttachFiles(list: FileList | null | undefined) {
     })
     accepted++
   }
-  if (accepted === 0 && attachments.value.length < MAX_ATTACH) {
-    flashAttachTip(dupCount > 0 ? '所选文件已在附件中' : '仅支持音频、图片、视频、PPT 与文档格式')
+  if (badFormat) flashAttachTip(`暂不支持此格式文件：${badFormat}`)
+  else if (tooBig) flashAttachTip(`文件过大：${tooBig}，请压缩后再试`)
+  else if (accepted === 0 && attachments.value.length < MAX_ATTACH) {
+    flashAttachTip(dupCount > 0 ? '所选文件已在附件中' : '暂不支持此格式文件')
   }
 }
 
@@ -692,6 +695,8 @@ async function streamAnswer() {
         })
         msg.liked = r.liked
         msg.qaId = r.id
+        // 后端校验后的权威全文：覆盖流式期间可能叠重的中间文本（agent 多轮修正等）
+        if (r.answer) msg.text = r.answer
         if (r.followups?.length) msg.followups = r.followups
         // 政治引导 / 健康禁忌拦截：回答带审核标记，弹对应安全提醒
         if (r.moderation === 'political' || r.moderation === 'health_block') {
@@ -1138,19 +1143,12 @@ onDeactivated(() => {
               <AppIcon name="plus" :size="16" />
             </button>
             <Transition name="drop">
-              <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="选择附件类型">
-                <button
-                  v-for="m in ATTACH_MENU"
-                  :key="m.kind"
-                  type="button"
-                  class="attach-opt"
-                  role="menuitem"
-                  @click="pickAttach(m.kind)"
-                >
-                  <span class="ao-ico" :class="UPLOAD_KIND_META[m.kind].tint"><AppIcon :name="UPLOAD_KIND_META[m.kind].icon" :size="14" /></span>
+              <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="上传附件">
+                <button type="button" class="attach-opt" role="menuitem" @click="pickAttach()">
+                  <span class="ao-ico tint-peach"><AppIcon name="file" :size="14" /></span>
                   <span class="ao-text">
-                    <b>{{ m.label }}</b>
-                    <i>{{ m.hint }}</i>
+                    <b>上传文件</b>
+                    <i>图片 / PPT / 音频 / 视频 / 文档</i>
                   </span>
                 </button>
               </div>
