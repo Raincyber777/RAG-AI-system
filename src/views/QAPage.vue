@@ -696,7 +696,7 @@ async function streamAnswer() {
         msg.liked = r.liked
         msg.qaId = r.id
         // 后端校验后的权威全文：覆盖流式期间可能叠重的中间文本（agent 多轮修正等）
-        if (r.answer) msg.text = r.answer
+        if (r.answer) msg.content = r.answer
         if (r.followups?.length) msg.followups = r.followups
         // 政治引导 / 健康禁忌拦截：回答带审核标记，弹对应安全提醒
         if (r.moderation === 'political' || r.moderation === 'health_block') {
