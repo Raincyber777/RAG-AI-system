@@ -212,20 +212,42 @@ const activeNote = computed(() =>
 // ---------- 历史记录（来自后端问答记录，会话首次切入时拉取一次） ----------
 const loadedSessions = new Set<string>()
 
-/** 后端问答记录 → 会话内两条消息（用户提问 + 助手回答） */
-function recordToMessages(r: ApiQaRecord): ChatMessage[] {
-  const citations: Citation[] = r.references.map((ref, i) => {
+/** 引用片段清洗：去 markdown 记号 / OCR 截图路径 / html 标签，压成一段整齐文本 */
+function cleanSnippet(raw: string) {
+  return raw
+    .replace(/<img[^>]*>/gi, ' ')
+    .replace(/<[^<>\n]{1,120}>/g, ' ')
+    .replace(/[!！]\s*\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\(?[A-Za-z]:[\\/][^)]*?\.(?:png|jpe?g|gif|webp|bmp)\)?/gi, ' ')
+    .replace(/!?\[[^\]]*\]/g, ' ')
+    .replace(/[#*`~|]+/g, ' ')
+    .replace(/-+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([，。；、！？])/g, '$1')
+    .replace(/。{2,}/g, '。')
+    .trim()
+    .replace(/^[^A-Za-z0-9一-鿿]+/, '')
+}
+
+/** 后端引用条目 → 卡片数据（历史恢复与流式结束两处共用，渲染口径一致） */
+function toCitations(refs: ApiQaRecord['references'], noteTitle: string): Citation[] {
+  return (Array.isArray(refs) ? refs : []).map((ref, i) => {
     const ext = ref.kind === 'external'
     return {
       no: i + 1,
       kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
       mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
-      note: ext ? '网络检索' : r.note_title,
-      snippet: ref.detail,
+      note: ext ? '网络检索' : noteTitle,
+      snippet: cleanSnippet(ref.detail ?? ''),
       score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
       url: ref.url,
     }
   })
+}
+
+/** 后端问答记录 → 会话内两条消息（用户提问 + 助手回答） */
+function recordToMessages(r: ApiQaRecord): ChatMessage[] {
+  const citations = toCitations(r.references, r.note_title)
   const time = r.created_at.slice(11, 16) || now()
   return [
     { id: 'q' + r.id, role: 'user', content: r.question, time },
@@ -329,9 +351,15 @@ function buildReply() {
   return { content: prefix + demoReply.content, citations: demoReply.citations as Citation[] }
 }
 
-// 引用标记 [1] → 上标
+// 回答正文渲染：先转义 HTML，再做引用标记 [1] 上标与网址链接化（来源说明里的网址可点击直达）
 function renderContent(text: string) {
-  return text.replace(/\[(\d+)\]/g, '<sup class="cite-mark">[$1]</sup>')
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\[(\d+)\]/g, '<sup class="cite-mark">[$1]</sup>')
+    .replace(/https?:\/\/[^\s<>"'），。；、！？（()]+/g, (u) => `<a class="content-link" href="${u}" target="_blank" rel="noopener">${u}</a>`)
 }
 
 // ---------- 滚动与导航 ----------
@@ -659,57 +687,59 @@ async function streamAnswer() {
   // 真流式：展示进度追赶 SSE 缓冲；流结束后落引用 / 追问 / 点赞态
   let reveal = 0
   let settled = false
-  void pending.then(() => {
+  let lastMoveAt = Date.now()
+  // resolve / reject 都算收尾：断流时 askQuestion 的 catch 已写入 buf.error；
+  // 若只监听 then，流中途异常会让 settled 永不成立 → 停止按钮永久卡住无法继续提问
+  void pending.finally(() => {
     settled = true
   })
   const timer = window.setInterval(() => {
     if (reveal < buf.text.length) {
       reveal = Math.min(buf.text.length, reveal + 2 + Math.floor(Math.random() * 3))
       msg.content = buf.text.slice(0, reveal)
+      lastMoveAt = Date.now()
       scrollToBottom()
       return
     }
-    if (!settled) return // 回答还没收完：继续等下一个增量（气泡内持续显示阶段文案）
-    window.clearInterval(timer)
-    streamTimer = null
-    streamStage.value = null
-    stopStageCycle()
-    if (buf.error) {
-      msg.content = `回答生成失败：${buf.error}`
-    } else {
-      // 审核拦截帧：无问答记录，气泡展示拦截文案并弹安全提醒
-      if (buf.blocked) safetyNotice.value = { kind: 'blocked', text: buf.text }
-      const r = buf.record
-      if (r) {
-        msg.citations = r.references.map((ref, i) => {
-          const ext = ref.kind === 'external'
-          return {
-            no: i + 1,
-            kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
-            mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
-            note: ext ? '网络检索' : r.note_title,
-            snippet: ref.detail,
-            score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
-            url: ref.url,
-          }
-        })
-        msg.liked = r.liked
-        msg.qaId = r.id
-        // 后端校验后的权威全文：覆盖流式期间可能叠重的中间文本（agent 多轮修正等）
-        if (r.answer) msg.content = r.answer
-        if (r.followups?.length) msg.followups = r.followups
-        // 政治引导 / 健康禁忌拦截：回答带审核标记，弹对应安全提醒
-        if (r.moderation === 'political' || r.moderation === 'health_block') {
-          safetyNotice.value = { kind: r.moderation, text: r.answer }
-        }
-        // 本次提问更新了健康档案：内联提示确认
-        if (r.profile_updated) showHealthTip()
-        // 停留时长计时起点：下次发送 / 离开页面上报
-        lastAnswer.value = { qaId: r.id, shownAt: Date.now() }
-      }
+    if (!settled) {
+      // 流迟迟不结束（连接黑洞 / 服务端无响应）：90 秒无任何增长按超时收尾
+      if (Date.now() - lastMoveAt < 90_000) return
+      buf.error = buf.error || '回答超时，请检查网络后重试'
+      settled = true
     }
-    isStreaming.value = false
-    scrollToBottom()
+    try {
+      window.clearInterval(timer)
+      streamTimer = null
+      streamStage.value = null
+      stopStageCycle()
+      if (buf.error) {
+        msg.content = `回答生成失败：${buf.error}`
+      } else {
+        // 审核拦截帧：无问答记录，气泡展示拦截文案并弹安全提醒
+        if (buf.blocked) safetyNotice.value = { kind: 'blocked', text: buf.text }
+        const r = buf.record
+        if (r) {
+          msg.citations = toCitations(r.references, r.note_title)
+          msg.liked = r.liked
+          msg.qaId = r.id
+          // 后端校验后的权威全文：覆盖流式期间可能叠重的中间文本（agent 多轮修正等）
+          if (r.answer) msg.content = r.answer
+          if (r.followups?.length) msg.followups = r.followups
+          // 政治引导 / 健康禁忌拦截：回答带审核标记，弹对应安全提醒
+          if (r.moderation === 'political' || r.moderation === 'health_block') {
+            safetyNotice.value = { kind: r.moderation, text: r.answer }
+          }
+          // 本次提问更新了健康档案：内联提示确认
+          if (r.profile_updated) showHealthTip()
+          // 停留时长计时起点：下次发送 / 离开页面上报
+          lastAnswer.value = { qaId: r.id, shownAt: Date.now() }
+        }
+      }
+    } finally {
+      // 无论收尾过程是否抛错都必须复位流式状态，否则发送键永远停留在停止态
+      isStreaming.value = false
+      scrollToBottom()
+    }
   }, 30)
   streamTimer = timer
 }
@@ -1039,9 +1069,9 @@ onDeactivated(() => {
                         <span class="tag tag-gray ellipsis">{{ c.kind === 'external' ? c.mark : c.note }}</span>
                       </div>
                       <p class="cite-snippet">{{ c.snippet }}</p>
-                      <a v-if="c.kind === 'external' && c.url" class="cite-link" :href="c.url" target="_blank" rel="noopener">
+                      <a v-if="c.kind === 'external' && c.url" class="cite-link" :href="c.url" target="_blank" rel="noopener" :title="c.url">
                         <AppIcon name="link" :size="12" />
-                        打开原文
+                        <span class="ellipsis">{{ c.url }}</span>
                       </a>
                       <div v-else class="cite-score">
                         <span>相关度</span>
@@ -1403,6 +1433,7 @@ onDeactivated(() => {
 .cite-card {
   background: var(--canvas); border: 1px solid var(--hairline);
   border-radius: var(--radius-md); padding: 12px 14px; font-size: 12.5px;
+  display: flex; flex-direction: column; /* 等高卡片：片段伸展、底部对齐 */
 }
 .cite-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .cite-no { color: var(--primary); font-weight: 700; flex-shrink: 0; }
@@ -1415,14 +1446,21 @@ onDeactivated(() => {
 .cite-kind.kb { background: var(--tint-peach); color: var(--brand-orange); }
 .cite-kind.external { background: var(--tint-lavender); color: var(--brand-purple-800); }
 .cite-link {
-  display: inline-flex; align-items: center; gap: 4px;
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; margin-top: auto;
   font-size: 11.5px; font-weight: 600; color: var(--link-blue); text-decoration: none;
   overflow-wrap: anywhere;
 }
+.cite-link .ellipsis { flex: 1; min-width: 0; }
 .cite-link:hover { text-decoration: underline; }
+.content-link { color: var(--primary); word-break: break-all; }
+.content-link:hover { text-decoration: underline; }
 .cite-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cite-snippet { color: var(--slate); line-height: 1.6; margin-bottom: 9px; overflow-wrap: anywhere; }
-.cite-score { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--steel); }
+.cite-snippet {
+  color: var(--slate); line-height: 1.6; margin-bottom: 9px; overflow-wrap: anywhere;
+  flex: 1; overflow: hidden; /* 超出 5 行截断，卡片高度整齐 */
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5;
+}
+.cite-score { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--steel); margin-top: auto; }
 .score-segs { display: inline-flex; gap: 2px; flex: 1; }
 .score-segs i { flex: 1; height: 6px; border-radius: 1.5px; background: var(--hairline); }
 .score-segs i.on { background: var(--primary); }
