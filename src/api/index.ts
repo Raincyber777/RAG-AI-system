@@ -359,12 +359,22 @@ export const tipsApi = {
 }
 
 // ---------- 数据速览 ----------
+/** 数据看板四张图的实时聚合（/stats/summary/ personal 口径返回） */
+export interface DashboardCharts {
+  daily: { date: string; count: number }[] // 近 14 天追问量（MM-DD，缺的日子补 0）
+  materials: { name: string; value: number }[] // 纪要材料类型分布（5 类齐全）
+  top_points: { label: string; count: number }[] // 高频知识点 Top10
+  cloud: { text: string; count: number }[] // 热门追问词云（Top16）
+  trend_delta: number | null // 近 7 日对比前 7 日的百分比变化；无基线为 null
+}
+
 export interface PersonalStats {
   scope: 'personal'
   notes: number
   qa_records: number
   quiz_items: number
   wrong_records: number
+  charts?: DashboardCharts
 }
 
 export const statsApi = {
