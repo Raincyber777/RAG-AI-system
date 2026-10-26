@@ -11,7 +11,7 @@ import LogoMark from '@/components/LogoMark.vue'
 import PolicyModal from '@/components/PolicyModal.vue'
 import { PRIVACY_POLICY, USER_AGREEMENT, type PolicyDoc } from '@/content/policies'
 import {
-  authModalOpen, authModalMode, closeAuth, guestLogin, login, register,
+  authModalOpen, authModalMode, closeAuth, login, register,
   buildAdminSsoUrl, type AuthMode,
 } from '@/store/auth'
 import { authApi, type CodeChannel } from '@/api'
@@ -168,11 +168,6 @@ function sendReset() {
     forgotSending.value = false
     forgotSent.value = true
   }, 800)
-}
-
-function doGuestLogin() {
-  guestLogin()
-  if (route.name === 'login') router.push('/studio')
 }
 
 // 弹窗打开时锁定背景滚动、支持 Esc 关闭；重新打开时重置找回密码 / 验证码状态
@@ -357,12 +352,6 @@ onBeforeUnmount(() => {
           </form>
         </Transition>
 
-        <template v-if="authModalMode !== 'forgot'">
-          <div class="divider"><span>或</span></div>
-          <button class="btn btn-secondary btn-block" @click="doGuestLogin">
-            <AppIcon name="user" :size="16" /> 游客一键体验
-          </button>
-        </template>
       </div>
     </div>
   </Transition>

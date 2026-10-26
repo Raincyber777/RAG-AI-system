@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { acceptUserSso, remoteLogoutCleanup } from '@/store/auth'
+import { acceptUserSso, clearLocalSession, remoteLogoutCleanup } from '@/store/auth'
 
 /**
  * 用户端路由表 — 智学纪要 · 多模态课堂知识助手
@@ -20,7 +20,7 @@ const router = createRouter({
     {
       path: '/',
       component: () => import('@/layouts/AppLayout.vue'),
-      // 进站一律先落在着陆页：已登录用户看到「进入系统」按钮再进应用，不直接进入已登录状态（2026-10-26）
+      // 进站一律先落在着陆页：着陆页即登录门禁，落场清空残留会话，必须重新登录才能进入（2026-10-26）
       redirect: '/login',
       children: [
         {
@@ -97,7 +97,8 @@ router.beforeEach((to) => {
     const t = pick('t')
     // 管理端跳入且带 token：直接建立会话（覆盖本地旧会话，残留失效 token 借此自愈）
     if (t && acceptUserSso({ n: pick('n'), e: pick('e'), r: pick('r'), t, rt: pick('rt') })) {
-      return { path: to.path, replace: true }
+      // SSO 建立的会话直接进应用，不落着陆页（着陆页落场即清会话，避免刚建立的会话被清掉）
+      return to.path === '/' || to.path === '/login' ? { path: '/studio', replace: true } : { path: to.path, replace: true }
     }
     // 缺 token 的 sso：本端已有会话则去掉参数继续（不要求重登），否则回登录页
     if (!t && localStorage.getItem('zy_token')) {
@@ -105,9 +106,11 @@ router.beforeEach((to) => {
     }
     return { name: 'login' }
   }
+  // 着陆页是进站门禁：每次落场都清空本地残留会话，进站一律要求重新登录（2026-10-26）
+  // （?logout=1 分支上方已清过；此处覆盖「带着旧 token 直接进站」的场景）
+  if (to.name === 'login') clearLocalSession()
   const authed = !!localStorage.getItem('zy_token') || !!localStorage.getItem('zy_guest')
   if (!authed && to.name !== 'login') return { name: 'login' }
-  // 已登录访问 /login 不再弹回应用：着陆页对已登录用户展示「进入系统」入口（2026-10-26）
   return true
 })
 

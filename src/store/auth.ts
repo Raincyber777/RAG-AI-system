@@ -1,6 +1,7 @@
 /**
  * 登录态共享 store（模块级 ref 单例）
- * 状态：游客模式（仅可浏览演示内容，功能操作统一弹出登录）/ 已登录（JWT）
+ * 状态：已登录（JWT）。游客浏览入口已下线——进站一律要求登录（2026-10-26），
+ * isGuest 仅用于兜底识别旧残留的游客标记（着陆页落场即清）
  * 登录 / 注册弹窗（AuthModal）在着陆页与应用内共用本状态
  * 分权：普通用户登录后留在用户端；管理员 / 超级管理员登录后携带 token 跳入管理端
  */
@@ -68,7 +69,8 @@ setAuthExpiredHandler(() => {
   clearLocalSession()
 })
 
-function clearLocalSession() {
+/** 清空本地登录态（token / 资料 / 游客标记）。着陆页每次落场都会调用：进站必须重新登录 */
+export function clearLocalSession() {
   clearTokens()
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(GUEST_KEY)
@@ -186,14 +188,6 @@ export async function register(form: {
 }
 
 /** 进入游客模式：无 token，仅可浏览 */
-export function guestLogin() {
-  localStorage.setItem(GUEST_KEY, '1')
-  role.value = 'user'
-  localStorage.setItem(ROLE_KEY, 'user')
-  isGuest.value = true
-  authModalOpen.value = false
-}
-
 /** 退出登录：通知后端拉黑 refresh（尽力而为），并清除全部本地登录信息 */
 export async function logout() {
   const refresh = getRefresh()
