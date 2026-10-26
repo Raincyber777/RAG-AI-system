@@ -288,20 +288,25 @@ const input = ref('')
 const isTyping = ref(false) // 前置阶段
 const isStreaming = ref(false) // 逐字输出
 
-type AiStage = 'searching' | 'thinking' | 'composing'
+type AiStage = 'searching' | 'thinking' | 'composing' | 'validating' | 'refining'
 const aiStage = ref<AiStage | null>(null)
 const STAGE_TEXT: Record<AiStage, string> = {
   searching: '正在检索课堂知识库',
   thinking: '正在思考',
   composing: '正在组织回答',
+  validating: '正在校验引用来源',
+  refining: '正在修正回答',
 }
 const STAGE_ICON: Record<AiStage, string> = {
   searching: 'database',
   thinking: 'spark',
   composing: 'edit',
+  validating: 'shield',
+  refining: 'refresh',
 }
 const stageTimers: number[] = []
 let streamTimer: number | null = null
+let streamLaunch: number | null = null // streamAnswer 启动定时器单列：后端 status 帧清假阶段时不能误杀它
 
 function clearStageTimers() {
   while (stageTimers.length) {
@@ -314,12 +319,13 @@ function runStages() {
   aiStage.value = 'searching'
   stageTimers.push(window.setTimeout(() => { aiStage.value = 'thinking' }, 1100))
   stageTimers.push(window.setTimeout(() => { aiStage.value = 'composing' }, 2400))
-  stageTimers.push(window.setTimeout(() => { streamAnswer() }, 3300))
+  streamLaunch = window.setTimeout(() => { streamAnswer() }, 3300)
 }
 
 // 流式等待期状态：正式消息气泡已创建但首字未到（检索 / 外部搜索耗时不定），
 // 必须持续显示阶段文案，绝不能渲染成无字空框；阶段在思考 / 组织间轮换表示活跃
 const streamStage = ref<AiStage | null>(null)
+const streamingId = ref('') // 正在流式输出的消息 id：校验进度小字只挂在它身上
 let stageCycle: number | null = null
 
 function stopStageCycle() {
@@ -333,14 +339,32 @@ function startStageCycle() {
   }, 3500)
 }
 
+// 后端 status 帧驱动真实阶段（agent 流水线：路由 / 多轮生成 / 校验 / 修正）。
+// 收到帧即停掉本地假轮换并清掉假阶段定时器，此后阶段完全由后端推进；
+// 通用问答（非 agent 链路）没有 status 帧，维持本地轮换不变。
+const backendStage = ref(false)
+function onStreamStatus(stage: string, round?: number) {
+  backendStage.value = true
+  clearStageTimers()
+  stopStageCycle()
+  const mapped: AiStage = stage === 'validating' ? 'validating'
+    : stage === 'retrieving' ? 'searching'
+    : stage === 'generating' ? 'composing'
+    : (round ?? 1) > 1 ? 'refining' : 'thinking'
+  aiStage.value = mapped
+  streamStage.value = mapped
+}
+
 function stopGenerating() {
   clearStageTimers()
   stopStageCycle()
   if (streamTimer) { window.clearInterval(streamTimer); streamTimer = null }
+  if (streamLaunch) { window.clearTimeout(streamLaunch); streamLaunch = null }
   isTyping.value = false
   isStreaming.value = false
   aiStage.value = null
   streamStage.value = null
+  streamingId.value = ''
 }
 
 // 把当前对话关联课堂的纪要标题代入演示回答（更贴近真实观感）
@@ -633,6 +657,7 @@ function send() {
 /** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显 */
 function askQuestion(text: string) {
   isTyping.value = true
+  backendStage.value = false // 新提问重置：阶段先走本地轮换，收到后端 status 帧再接管
   runStages()
   if (isGuest.value) {
     askPromise = null // 游客态回退到本地演示回答
@@ -642,7 +667,7 @@ function askQuestion(text: string) {
   const buf: AskBuf = { text: '', error: null, blocked: null, record: null }
   askBuf = buf
   // 会话标识随提问入库（session_ref）：刷新后按会话拉回历史
-  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined)
+  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined, onStreamStatus)
     .then((record) => {
       buf.record = record
       if (record) {
@@ -659,7 +684,7 @@ async function streamAnswer() {
   isStreaming.value = true
   isTyping.value = false // 前置气泡切到正式消息气泡，等待期状态由 streamStage 接管
   streamStage.value = aiStage.value || 'composing'
-  startStageCycle()
+  if (!backendStage.value) startStageCycle() // 后端 status 帧已接管时不做本地假轮换
   const msg: ChatMessage = reactive({
     id: 'a' + Date.now(),
     role: 'assistant',
@@ -667,6 +692,7 @@ async function streamAnswer() {
     time: now(),
   })
   if (activeSessionId.value) messagesFor(activeSessionId.value).push(msg)
+  streamingId.value = msg.id
   scrollToBottom()
 
   const pending = askPromise
@@ -687,6 +713,7 @@ async function streamAnswer() {
         streamTimer = null
         streamStage.value = null
         stopStageCycle()
+        streamingId.value = ''
         isStreaming.value = false
         scrollToBottom()
       }
@@ -705,6 +732,13 @@ async function streamAnswer() {
     settled = true
   })
   const timer = window.setInterval(() => {
+    if (buf.text.length < reveal) {
+      // agent 修正轮：后端 replace 清空缓冲重写。播放位必须同步回退，否则旧草稿
+      // 冻结在屏上、新答案永远追不上，看起来就是「答完却卡住」
+      reveal = buf.text.length
+      msg.content = buf.text.slice(0, reveal)
+      lastMoveAt = Date.now()
+    }
     if (reveal < buf.text.length) {
       reveal = Math.min(buf.text.length, reveal + 2 + Math.floor(Math.random() * 3))
       msg.content = buf.text.slice(0, reveal)
@@ -723,6 +757,7 @@ async function streamAnswer() {
       streamTimer = null
       streamStage.value = null
       stopStageCycle()
+      streamingId.value = ''
       if (buf.error) {
         msg.content = `回答生成失败：${buf.error}`
       } else {
@@ -1059,6 +1094,12 @@ onDeactivated(() => {
                   </Transition>
                 </div>
                 <div v-else class="ai-bubble" v-html="renderAnswer(msg.content)"></div>
+
+                <!-- 校验进度：正文已上屏但来源校验仍在跑，小字提示避免「像卡住」 -->
+                <div v-if="msg.content && streamStage === 'validating' && msg.id === streamingId" class="stream-chip">
+                  <AppIcon :name="STAGE_ICON[streamStage]" :size="12" />
+                  {{ STAGE_TEXT[streamStage] }}…
+                </div>
 
                 <!-- 引用溯源：录音时间戳 / 图片来源 -->
                 <div v-if="msg.citations?.length" class="cite-panel">
@@ -1436,6 +1477,13 @@ onDeactivated(() => {
 .stage-enter-active, .stage-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; }
 .stage-enter-from { opacity: 0; transform: translateY(4px); }
 .stage-leave-to { opacity: 0; transform: translateY(-4px); }
+
+/* 校验进度小字：正文下方弱化展示（仅 agent 链路校验期间出现） */
+.stream-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 6px; font-size: 12px; font-weight: 500; color: var(--steel);
+}
+.stream-chip svg { animation: stage-icon-pulse 1.4s ease-in-out infinite; }
 
 /* ---------- 引用溯源 ---------- */
 .cite-panel { margin-top: 10px; }

@@ -162,6 +162,8 @@ export const qaApi = {
 
 /**
  * SSE 流式问答：回答增量实时写入 buf.text（event: delta），结束返回完整问答记录（event: done）。
+ * 后端 event: status（stage + round）经 onStatus 上抛：agent 链路的路由 / 生成 / 校验 / 修正
+ * 阶段实时驱动页面状态提示（校验期间正文已上屏，不再像卡住）。
  * 内容被安全审核拦截时下发 event: blocked（category + message）：message 写入 buf.text 展示拦截文案，
  * buf.blocked 记下类别供页面弹安全提醒，返回 null（无记录可入库）。
  * 接口报错（如未完成纪要 400）写入 buf.error；网络 / 流异常时也以 buf.error 收尾，
@@ -172,6 +174,7 @@ export async function streamAsk(
   question: string,
   buf: { text: string; error: string | null; blocked?: string | null },
   sessionRef?: string,
+  onStatus?: (stage: string, round?: number) => void,
 ): Promise<ApiQaRecord | null> {
   let res: Response
   try {
@@ -223,6 +226,7 @@ export async function streamAsk(
         const payload = JSON.parse(dataStr)
         if (name === 'delta' && typeof payload.text === 'string') buf.text += payload.text
         else if (name === 'replace' && typeof payload.text === 'string') buf.text = payload.text
+        else if (name === 'status' && onStatus && typeof payload.stage === 'string') onStatus(payload.stage, payload.round)
         else if (name === 'done') return payload as ApiQaRecord
         else if (name === 'blocked') {
           buf.blocked = typeof payload.category === 'string' ? payload.category : 'blocked'
