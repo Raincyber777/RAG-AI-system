@@ -344,16 +344,25 @@ function startStageCycle() {
 // 收到帧即停掉本地假轮换并清掉假阶段定时器，此后阶段完全由后端推进；
 // 通用问答（非 agent 链路）没有 status 帧，维持本地轮换不变。
 const backendStage = ref(false)
+const refineRound = ref(0) // 修正轮计数：阶段文案带「第 N 轮」，让多轮校验可感知
 function onStreamStatus(stage: string, round?: number) {
   backendStage.value = true
   clearStageTimers()
   stopStageCycle()
+  if ((round ?? 0) > refineRound.value) refineRound.value = round!
   const mapped: AiStage = stage === 'validating' ? 'validating'
     : stage === 'retrieving' ? 'searching'
     : stage === 'generating' ? 'composing'
     : (round ?? 1) > 1 ? 'refining' : 'thinking'
   aiStage.value = mapped
   streamStage.value = mapped
+}
+
+// 阶段文案：修正轮带轮次（如「正在修正回答（第 2 轮）」），其余直接取表
+function stageText(stage: AiStage) {
+  return stage === 'refining' && refineRound.value > 1
+    ? `${STAGE_TEXT[stage]}（第 ${refineRound.value} 轮）`
+    : STAGE_TEXT[stage]
 }
 
 function stopGenerating() {
@@ -670,6 +679,7 @@ function send() {
 function askQuestion(text: string) {
   isTyping.value = true
   backendStage.value = false // 新提问重置：阶段先走本地轮换，收到后端 status 帧再接管
+  refineRound.value = 0
   runStages()
   if (isGuest.value) {
     askPromise = null // 游客态回退到本地演示回答
@@ -1185,16 +1195,16 @@ onDeactivated(() => {
                   <Transition name="stage" mode="out-in">
                     <span :key="streamStage" class="typing-stage">
                       <AppIcon :name="STAGE_ICON[streamStage]" :size="13" />
-                      {{ STAGE_TEXT[streamStage] }}…
+                      {{ stageText(streamStage) }}…
                     </span>
                   </Transition>
                 </div>
                 <div v-else class="ai-bubble" v-html="renderAnswer(msg.content)"></div>
 
-                <!-- 校验进度：正文已上屏但来源校验仍在跑，小字提示避免「像卡住」 -->
-                <div v-if="msg.content && streamStage === 'validating' && msg.id === streamingId" class="stream-chip">
+                <!-- 校验 / 修正进度：正文已上屏但流水线仍在跑，小字提示避免「像卡住」 -->
+                <div v-if="msg.content && (streamStage === 'validating' || streamStage === 'refining') && msg.id === streamingId" class="stream-chip">
                   <AppIcon :name="STAGE_ICON[streamStage]" :size="12" />
-                  {{ STAGE_TEXT[streamStage] }}…
+                  {{ stageText(streamStage) }}…
                 </div>
 
                 <!-- 引用溯源：录音时间戳 / 图片来源 -->
@@ -1257,7 +1267,7 @@ onDeactivated(() => {
               <Transition name="stage" mode="out-in">
                 <span :key="aiStage" class="typing-stage">
                   <AppIcon :name="STAGE_ICON[aiStage]" :size="13" />
-                  {{ STAGE_TEXT[aiStage] }}…
+                  {{ stageText(aiStage) }}…
                 </span>
               </Transition>
             </div>
