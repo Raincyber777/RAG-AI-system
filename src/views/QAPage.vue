@@ -253,7 +253,7 @@ function recordToMessages(r: ApiQaRecord): ChatMessage[] {
     { id: 'q' + r.id, role: 'user', content: r.question, time },
     {
       id: 'a' + r.id, role: 'assistant', content: r.answer,
-      citations, followups: r.followups, liked: r.liked, qaId: r.id, time,
+      citations, followups: r.followups, qaId: r.id, time,
     },
   ]
 }
@@ -285,6 +285,7 @@ function switchSession(id: string) {
 
 // ---------- AI 状态机 ----------
 const input = ref('')
+const composerInput = ref<HTMLTextAreaElement | null>(null)
 const isTyping = ref(false) // 前置阶段
 const isStreaming = ref(false) // 逐字输出
 
@@ -558,6 +559,15 @@ function onComposerDrop(e: DragEvent) {
   handleAttachFiles(e.dataTransfer?.files)
 }
 
+// 粘贴支持：剪贴板带图片文件时直接转附件（截图 Ctrl+V 即传），纯文本走浏览器默认粘贴
+function onComposerPaste(e: ClipboardEvent) {
+  const files = e.clipboardData?.files
+  if (files && files.length) {
+    e.preventDefault()
+    handleAttachFiles(files)
+  }
+}
+
 // 附件菜单：点击外部 / Esc 关闭
 function onDocClick(e: MouseEvent) {
   if (attachMenuOpen.value && attachMenuRoot.value && !attachMenuRoot.value.contains(e.target as Node)) {
@@ -637,10 +647,12 @@ function send() {
   // 没有选中对话时自动新建一条再发送（不必先点「新增对话」）
   if (!activeSessionId.value) createSession()
 
+  // 引用的消息随提问一并发送（正文内联引用块；标题仍取本人原文）
+  const full = withQuote(text)
   messagesFor(activeSessionId.value).push({
     id: 'u' + Date.now(),
     role: 'user',
-    content: text,
+    content: full,
     attachments: attachments.value.length ? (attachments.value.map((a) => ({ ...a })) as ChatAttachment[]) : undefined,
     time: now(),
   })
@@ -651,7 +663,7 @@ function send() {
   attachments.value = []
   input.value = ''
   scrollToBottom()
-  askQuestion(text)
+  askQuestion(full)
 }
 
 /** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显 */
@@ -766,7 +778,6 @@ async function streamAnswer() {
         const r = buf.record
         if (r) {
           msg.citations = toCitations(r.references, r.note_title)
-          msg.liked = r.liked
           msg.qaId = r.id
           // 后端校验后的权威全文：覆盖流式期间可能叠重的中间文本（agent 多轮修正等）
           if (r.answer) msg.content = r.answer
@@ -802,21 +813,97 @@ function regenerate(msg: ChatMessage) {
   askQuestion(question) // 重新提问（后端生成一条新记录）
 }
 
-function toggleLike(msg: ChatMessage, liked: boolean) {
-  msg.liked = liked ? !msg.liked : false
-  msg.disliked = !liked ? !msg.disliked : false
-  // 👍👎 都上报反馈埋点（驱动片段加权 / 降权与训练样本筛选），后端回同步点赞态
-  if (msg.qaId) {
-    void qaApi.feedback(msg.qaId, liked ? 'like' : 'dislike')
-      .then((r) => { msg.liked = r.liked })
-      .catch(() => {})
+// ---------- 消息操作：复制 / 引用 / 回滚 ----------
+// 复制兜底：部署站是 http，navigator.clipboard 只在安全上下文存在，
+// 必须降级 execCommand，否则线上点击复制毫无反应
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* 非安全上下文或权限拒绝，走降级 */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    ta.remove()
+    return ok
+  } catch {
+    return false
   }
 }
 
-function copyMessage(msg: ChatMessage) {
-  navigator.clipboard?.writeText(msg.content)
+const actionTip = ref('')
+let actionTipTimer: number | undefined
+function flashActionTip(text: string) {
+  actionTip.value = text
+  if (actionTipTimer) window.clearTimeout(actionTipTimer)
+  actionTipTimer = window.setTimeout(() => (actionTip.value = ''), 2400)
+}
+
+async function copyMessage(msg: ChatMessage) {
+  const ok = await copyText(msg.content)
+  flashActionTip(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本复制')
   // 复制埋点：视为有用信号，驱动片段加权
-  if (msg.qaId) void qaApi.feedback(msg.qaId, 'copy').catch(() => {})
+  if (ok && msg.qaId) void qaApi.feedback(msg.qaId, 'copy').catch(() => {})
+}
+
+// 引用消息：composer 上方出现引用条，摘录随下一次提问一并发给后端
+const quoteMsg = ref<ChatMessage | null>(null)
+function quoteFor(msg: ChatMessage) {
+  quoteMsg.value = msg
+  nextTick(() => composerInput.value?.focus())
+}
+// 发送时把引用摘录拼进提问正文（会话标题仍取本人原文，不带引用块）
+function withQuote(text: string) {
+  const q = quoteMsg.value
+  quoteMsg.value = null
+  if (!q) return text
+  const excerpt = q.content.replace(/\s+/g, ' ').trim().slice(0, 120)
+  const who = q.role === 'user' ? '我' : 'AI'
+  return `（引用${who}此前的消息：「${excerpt}」）\n${text}`
+}
+
+// 回滚到某条提问：删除该问答及其后的全部记录（服务端 + 本地），
+// 原问题填回输入框可改后重发（Claude 式 rewind）
+const rollbackTarget = ref<{ msg: ChatMessage; idx: number; count: number; recordId?: number } | null>(null)
+const rollbackBusy = ref(false)
+const rollbackError = ref('')
+function askRollback(msg: ChatMessage) {
+  if (isStreaming.value || isTyping.value || !activeSessionId.value) return
+  const list = messagesFor(activeSessionId.value)
+  const idx = list.indexOf(msg)
+  if (idx < 0) return
+  rollbackTarget.value = {
+    msg, idx,
+    count: list.length - idx,
+    recordId: list.slice(idx + 1).find((m) => m.role === 'assistant' && m.qaId)?.qaId,
+  }
+  rollbackBusy.value = false
+  rollbackError.value = ''
+}
+async function confirmRollback() {
+  const t = rollbackTarget.value
+  if (!t || rollbackBusy.value || !activeSessionId.value) return
+  rollbackBusy.value = true
+  rollbackError.value = ''
+  try {
+    if (!isGuest.value && t.recordId) await qaApi.rollback(activeSessionId.value, t.recordId)
+    messagesFor(activeSessionId.value).splice(t.idx)
+    input.value = t.msg.content
+    quoteMsg.value = null
+    rollbackTarget.value = null
+    nextTick(() => composerInput.value?.focus())
+  } catch (e) {
+    rollbackError.value = e instanceof Error ? e.message : '回滚失败，请稍后再试'
+  } finally {
+    rollbackBusy.value = false
+  }
 }
 
 // ---------- 语音输入（Web Speech API，需 HTTPS） ----------
@@ -1069,15 +1156,24 @@ onDeactivated(() => {
               :class="{ flash: flashId === msg.id }"
               :data-mid="msg.id"
             >
-              <div class="bubble-user">
-                <div v-if="msg.attachments?.length" class="ba-list">
-                  <span v-for="a in msg.attachments" :key="a.id" class="ba-chip">
-                    <img v-if="a.preview" :src="a.preview" class="ba-thumb" alt="附件预览" />
-                    <AppIcon v-else :name="UPLOAD_KIND_META[a.kind].icon" :size="11" />
-                    <span class="ellipsis">{{ a.name }}</span>
-                  </span>
+              <div class="user-col">
+                <div class="bubble-user">
+                  <div v-if="msg.attachments?.length" class="ba-list">
+                    <span v-for="a in msg.attachments" :key="a.id" class="ba-chip">
+                      <img v-if="a.preview" :src="a.preview" class="ba-thumb" alt="附件预览" />
+                      <AppIcon v-else :name="UPLOAD_KIND_META[a.kind].icon" :size="11" />
+                      <span class="ellipsis">{{ a.name }}</span>
+                    </span>
+                  </div>
+                  <div v-if="msg.content" class="bubble-text">{{ msg.content }}</div>
                 </div>
-                <div v-if="msg.content" class="bubble-text">{{ msg.content }}</div>
+                <!-- 用户消息操作行：与 AI 消息同款（复制 / 引用 / 回滚） -->
+                <div class="msg-actions user-actions">
+                  <button class="action-btn" title="复制" aria-label="复制提问" @click="copyMessage(msg)"><AppIcon name="copy" :size="14" /></button>
+                  <button class="action-btn" title="引用" aria-label="引用提问" @click="quoteFor(msg)"><AppIcon name="quote" :size="14" /></button>
+                  <button class="action-btn" title="回滚到此处" aria-label="回滚到此处" @click="askRollback(msg)"><AppIcon name="undo" :size="14" /></button>
+                  <span class="msg-time">{{ msg.time }}</span>
+                </div>
               </div>
             </div>
 
@@ -1145,13 +1241,8 @@ onDeactivated(() => {
                 </div>
 
                 <div class="msg-actions">
-                  <button class="action-btn" :class="{ on: msg.liked }" title="有用" aria-label="有用" @click="toggleLike(msg, true)">
-                    <AppIcon name="thumbs-up" :size="14" />
-                  </button>
-                  <button class="action-btn" :class="{ on: msg.disliked }" title="无用" aria-label="无用" @click="toggleLike(msg, false)">
-                    <AppIcon name="thumbs-down" :size="14" />
-                  </button>
                   <button class="action-btn" title="复制" aria-label="复制回答" @click="copyMessage(msg)"><AppIcon name="copy" :size="14" /></button>
+                  <button class="action-btn" title="引用" aria-label="引用回答" @click="quoteFor(msg)"><AppIcon name="quote" :size="14" /></button>
                   <button class="action-btn" title="重新生成" aria-label="重新生成" @click="regenerate(msg)"><AppIcon name="refresh" :size="14" /></button>
                   <span class="msg-time">{{ msg.time }}</span>
                 </div>
@@ -1238,6 +1329,13 @@ onDeactivated(() => {
           </div>
 
           <div class="composer-mid">
+            <!-- 引用条：随下一次提问一并发送 -->
+            <div v-if="quoteMsg" class="quote-chip">
+              <AppIcon name="quote" :size="12" />
+              <span class="quote-who">{{ quoteMsg.role === 'user' ? '引用我的提问' : '引用 AI 回答' }}</span>
+              <span class="quote-text ellipsis">{{ quoteMsg.content }}</span>
+              <button class="quote-x" aria-label="取消引用" @click="quoteMsg = null"><AppIcon name="x" :size="12" /></button>
+            </div>
             <div v-if="attachments.length" class="attach-list">
               <div v-for="a in attachments" :key="a.id" class="attach-chip">
                 <img v-if="a.preview" :src="a.preview" class="ac-thumb" alt="图片附件预览" />
@@ -1248,11 +1346,13 @@ onDeactivated(() => {
               </div>
             </div>
             <textarea
+              ref="composerInput"
               v-model="input"
               class="composer-input"
               :placeholder="listening ? '正在聆听，请说话…' : (hasNotes ? '向课堂知识库提问…' : '有任何问题都可以问…') + '（Enter 发送 / Shift+Enter 换行）'"
               rows="1"
               @keydown.enter.exact.prevent="send"
+              @paste="onComposerPaste"
             ></textarea>
           </div>
 
@@ -1277,9 +1377,25 @@ onDeactivated(() => {
         <p v-if="attachTip" class="composer-tip attach-tip"><AppIcon name="alert" :size="12" /> {{ attachTip }}</p>
         <p v-else-if="voiceTip" class="composer-tip voice-tip">{{ voiceTip }}</p>
         <p v-else-if="healthTip" class="composer-tip health-tip"><AppIcon name="shield" :size="12" /> {{ healthTip }}</p>
+        <p v-else-if="actionTip" class="composer-tip action-tip"><AppIcon name="check" :size="12" /> {{ actionTip }}</p>
         <p v-else class="composer-tip">{{ hasNotes ? '回答由 AI 基于课堂纪要生成，请以引用原文为准' : '回答由 AI 结合全网资料生成，并标注来源与依据' }}</p>
       </footer>
     </section>
+
+    <!-- 回滚确认：列出将删除的消息数，避免误删 -->
+    <div v-if="rollbackTarget" class="modal-mask" @click.self="!rollbackBusy && (rollbackTarget = null)">
+      <div class="modal modal-sm">
+        <div class="modal-title">回滚到此处</div>
+        <p class="modal-sub">
+          将删除这条提问及其后的 {{ rollbackTarget.count }} 条消息（含配对回答与追问），对话回到提问前的状态，原问题会填回输入框。此操作不可恢复。
+        </p>
+        <p v-if="rollbackError" class="rollback-err">{{ rollbackError }}</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" :disabled="rollbackBusy" @click="rollbackTarget = null">取消</button>
+          <button class="btn btn-danger" :disabled="rollbackBusy" @click="confirmRollback">{{ rollbackBusy ? '回滚中…' : '确认回滚' }}</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 删除对话确认 -->
     <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
@@ -1442,7 +1558,7 @@ onDeactivated(() => {
 
 .row-user { display: flex; justify-content: flex-end; margin-bottom: 22px; }
 .bubble-user {
-  max-width: 72%; background: var(--primary); color: #fff;
+  max-width: 100%; background: var(--primary); color: #fff;
   padding: 12px 16px; border-radius: 14px 14px 4px 14px; line-height: 1.6; white-space: pre-wrap;
   overflow-wrap: anywhere; /* 用户粘贴长链接同样不撑破气泡 */
 }
@@ -1539,6 +1655,26 @@ onDeactivated(() => {
 .action-btn:hover { background: var(--surface); color: var(--ink); }
 .action-btn.on { color: var(--primary); background: var(--tint-lavender); }
 .msg-time { font-size: 11px; color: var(--muted); margin-left: 6px; }
+/* 用户消息操作行：右对齐挂在气泡下（宽度上限移到列容器上） */
+.user-col { display: flex; flex-direction: column; align-items: flex-end; max-width: 72%; }
+.user-actions { justify-content: flex-end; }
+
+/* 引用条：composer 内待发送的引用消息 */
+.quote-chip {
+  display: flex; align-items: center; gap: 6px;
+  max-width: 100%; margin-bottom: 6px; padding: 5px 10px;
+  background: var(--tint-lavender); border-radius: 8px;
+  font-size: 12px; color: var(--slate);
+}
+.quote-chip > svg { flex-shrink: 0; color: var(--primary); }
+.quote-who { flex-shrink: 0; font-weight: 600; color: var(--primary); }
+.quote-text { flex: 1; min-width: 0; }
+.quote-x { flex-shrink: 0; display: flex; cursor: pointer; color: var(--steel); background: none; border: none; padding: 2px; }
+.quote-x:hover { color: var(--ink); }
+
+/* 操作提示（复制成功 / 失败等）与回滚报错 */
+.action-tip svg { color: var(--primary); }
+.rollback-err { font-size: 13px; color: #d92d20; margin-bottom: 10px; }
 
 /* ---------- 输入区 ---------- */
 .composer { padding: 14px 24px 16px; border-top: 1px solid var(--hairline); background: var(--canvas); }

@@ -156,6 +156,12 @@ export const qaApi = {
       method: 'POST',
       data: { action, ...(value ? { value } : {}) },
     }),
+  /** 会话回滚：删除该问答及其后的全部记录（Claude 式 rewind 的服务端部分） */
+  rollback: (sessionRef: string, recordId: number) =>
+    request<{ deleted: number }>('/qa/rollback/', {
+      method: 'POST',
+      data: { session_ref: sessionRef, record_id: recordId },
+    }),
   /** 欢迎页个性化追问建议（按用户近期提问生成，失败由页面回退默认文案） */
   suggestions: () => request<{ suggestions: string[] }>('/qa/suggestions/'),
 }

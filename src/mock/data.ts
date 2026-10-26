@@ -167,9 +167,7 @@ export interface ChatMessage {
   /** RAG 生成的追问建议（回答下方可点击继续问） */
   followups?: string[]
   attachments?: ChatAttachment[]
-  liked?: boolean
-  disliked?: boolean
-  /** 后端问答记录 id（历史消息点赞同步用；本地新发消息在回答就绪后回填） */
+  /** 后端问答记录 id（历史消息操作同步用；本地新发消息在回答就绪后回填） */
   qaId?: number
   time: string
 }
