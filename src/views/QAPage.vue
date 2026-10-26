@@ -362,6 +362,17 @@ function renderContent(text: string) {
     .replace(/https?:\/\/[^\s<>"'），。；、！？（()]+/g, (u) => `<a class="content-link" href="${u}" target="_blank" rel="noopener">${u}</a>`)
 }
 
+// 来源说明分区：正文与「—— 来源说明 ——」后的来源列表分开渲染，
+// 来源区弱化为小字灰字，不和正文同样突显（2026-10-26 用户反馈）
+const SOURCE_MARK = '—— 来源说明 ——'
+function renderAnswer(text: string) {
+  const i = text.indexOf(SOURCE_MARK)
+  if (i < 0) return renderContent(text)
+  const body = renderContent(text.slice(0, i).replace(/\n+$/, ''))
+  const src = renderContent(text.slice(i + SOURCE_MARK.length).replace(/^\n+/, ''))
+  return `${body}<div class="src-note"><div class="src-note-title">来源说明</div>${src}</div>`
+}
+
 // ---------- 滚动与导航 ----------
 const messagesEl = ref<HTMLDivElement>()
 function scrollToBottom(instant = false) {
@@ -1047,7 +1058,7 @@ onDeactivated(() => {
                     </span>
                   </Transition>
                 </div>
-                <div v-else class="ai-bubble" v-html="renderContent(msg.content)"></div>
+                <div v-else class="ai-bubble" v-html="renderAnswer(msg.content)"></div>
 
                 <!-- 引用溯源：录音时间戳 / 图片来源 -->
                 <div v-if="msg.citations?.length" class="cite-panel">
@@ -1405,6 +1416,12 @@ onDeactivated(() => {
   /* 长链接等不可断字符串在气泡内强制换行，避免溢出气泡边框 */
   overflow-wrap: anywhere;
 }
+/* 来源说明分区（v-html 内容需 :deep）：小字弱化 + 分隔线，与正文区分主次 */
+:deep(.src-note) {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--hairline);
+  font-size: 12.5px; line-height: 1.8; color: var(--steel);
+}
+:deep(.src-note-title) { font-weight: 600; color: var(--slate); margin-bottom: 2px; }
 :deep(.cite-mark) {
   color: var(--primary); font-weight: 600; cursor: pointer; font-size: 11px;
   background: var(--tint-lavender); border-radius: 4px; padding: 0 3px; margin: 0 1px;
