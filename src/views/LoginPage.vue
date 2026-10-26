@@ -13,7 +13,7 @@ import AuthModal from '@/components/AuthModal.vue'
 import FaqModal from '@/components/FaqModal.vue'
 import PolicyModal from '@/components/PolicyModal.vue'
 import { PRIVACY_POLICY, USER_AGREEMENT, type PolicyDoc } from '@/content/policies'
-import { openAuth, guestLogin } from '@/store/auth'
+import { openAuth, guestLogin, isGuest, currentUser } from '@/store/auth'
 import { faqApi } from '@/api'
 import heroImg from '@/assets/landing-students.png'
 
@@ -61,6 +61,12 @@ onBeforeUnmount(() => {
 /* ---------- 游客一键体验：进入应用（仅可浏览，功能操作会弹出登录） ---------- */
 function startGuest() {
   guestLogin()
+  router.push('/studio')
+}
+
+/* ---------- 已登录（含游客态）访问着陆页：入口按钮换成「进入系统」，不再直接进应用 ---------- */
+const authed = computed(() => isGuest.value || !!currentUser.value)
+function enterApp() {
   router.push('/studio')
 }
 
@@ -141,8 +147,13 @@ function switchPolicy(key: PolicyDoc['key']) {
         </nav>
 
         <div class="nav-actions">
-          <button class="pill pill-ghost" @click="openAuth('login')">登录</button>
-          <button class="pill pill-primary" @click="openAuth('register')">免费注册</button>
+          <template v-if="authed">
+            <button class="pill pill-primary" @click="enterApp">进入系统</button>
+          </template>
+          <template v-else>
+            <button class="pill pill-ghost" @click="openAuth('login')">登录</button>
+            <button class="pill pill-primary" @click="openAuth('register')">免费注册</button>
+          </template>
         </div>
       </div>
     </header>
@@ -165,7 +176,9 @@ function switchPolicy(key: PolicyDoc['key']) {
               每个结论都能溯源到录音时间戳与 PPT 页码，随时追问、一键出题练习。
             </p>
             <div class="cta-row">
-              <button class="btn btn-primary cta" @click="openAuth('register')">免费开始使用</button>
+              <button class="btn btn-primary cta" @click="authed ? enterApp() : openAuth('register')">
+                {{ authed ? '进入系统' : '免费开始使用' }}
+              </button>
               <button class="cta-ghost" @click="scrollToSec('how')">
                 了解使用流程 <AppIcon name="download" :size="14" />
               </button>
@@ -249,7 +262,9 @@ function switchPolicy(key: PolicyDoc['key']) {
         <div class="cta-band">
           <h2>把下一堂课，变成可追问的知识库</h2>
           <p>免费注册，几分钟内生成你的第一份课堂纪要</p>
-          <button class="btn btn-primary cta" @click="openAuth('register')">免费注册</button>
+          <button class="btn btn-primary cta" @click="authed ? enterApp() : openAuth('register')">
+            {{ authed ? '进入系统' : '免费注册' }}
+          </button>
         </div>
       </section>
     </main>

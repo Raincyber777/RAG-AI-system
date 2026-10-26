@@ -20,7 +20,8 @@ const router = createRouter({
     {
       path: '/',
       component: () => import('@/layouts/AppLayout.vue'),
-      redirect: '/studio',
+      // 进站一律先落在着陆页：已登录用户看到「进入系统」按钮再进应用，不直接进入已登录状态（2026-10-26）
+      redirect: '/login',
       children: [
         {
           path: 'studio',
@@ -106,7 +107,7 @@ router.beforeEach((to) => {
   }
   const authed = !!localStorage.getItem('zy_token') || !!localStorage.getItem('zy_guest')
   if (!authed && to.name !== 'login') return { name: 'login' }
-  if (authed && to.name === 'login') return { name: 'studio' }
+  // 已登录访问 /login 不再弹回应用：着陆页对已登录用户展示「进入系统」入口（2026-10-26）
   return true
 })
 
