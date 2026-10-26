@@ -26,6 +26,7 @@ export interface ClassNote {
   chunkCount: number // 入库知识片段数
   questions: number // 追问次数
   status: 'done' | 'processing' | 'failed'
+  failReason?: string // 生成失败的可读原因（后端 fail_reason），仅 failed 时有值
   theme: string // 课程主题概述
   points: KeyPoint[] // 核心知识点
   definitions: Definition[] // 重要定义与公式

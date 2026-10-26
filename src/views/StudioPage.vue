@@ -497,7 +497,10 @@ function startGenerate() {
             } else if (n.status === 'failed') {
               clearAllTimers()
               genState.value = 'stopped'
-              genError.value = '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
+              // 后端已写入面向用户的失败原因（如「未识别到语音内容」），有则优先展示
+              genError.value = n.fail_reason
+                ? `生成失败：${n.fail_reason}`
+                : '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
             }
           } catch { /* 网络抖动等下一轮 */ }
         }, 4000)

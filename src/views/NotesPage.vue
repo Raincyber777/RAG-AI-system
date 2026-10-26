@@ -150,7 +150,10 @@ async function retryNote(n: ClassNote) {
         </div>
         <div class="nc-title" role="button" tabindex="0" @click="viewNote(n)" @keydown.enter.prevent="viewNote(n)">{{ n.title }}</div>
         <p v-if="n.theme" class="nc-theme">{{ n.theme }}</p>
-        <p v-else class="nc-theme muted">纪要内容尚未生成{{ n.status === 'failed' ? '，可尝试重新处理' : '' }}。</p>
+        <p v-else-if="n.status === 'failed'" class="nc-theme" :class="{ muted: !n.failReason }">
+          {{ n.failReason ? `生成失败：${n.failReason}` : '纪要内容尚未生成，可尝试重新处理。' }}
+        </p>
+        <p v-else class="nc-theme muted">纪要内容尚未生成。</p>
 
         <div class="nc-meta">
           <span class="meta-item"><AppIcon name="calendar" :size="13" /> {{ n.date }}</span>

@@ -22,6 +22,7 @@ export function noteFromApi(n: ApiNote): ClassNote {
     chunkCount: n.points.length + n.definitions.length + n.emphasized.length,
     questions: n.questions,
     status: n.status,
+    failReason: n.fail_reason || '',
     theme: n.theme,
     points: n.points.map((p) => ({ text: p.text, cite: p.ref || '' })),
     definitions: n.definitions.map((d) => ({ term: d.term, detail: d.text, cite: d.ref || '' })),

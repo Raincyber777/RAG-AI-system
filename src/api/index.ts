@@ -73,6 +73,7 @@ export interface ApiNote {
   title: string
   duration: string
   status: 'processing' | 'done' | 'failed'
+  fail_reason?: string
   uploader: number
   uploader_name: string
   source: string
