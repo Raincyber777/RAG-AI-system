@@ -4,7 +4,7 @@
  * 查看（工作台回看）/ 追问 / 导出 Markdown / 删除（确认弹窗）/ 失败重试
  * 数据来自共享 store（工作台新生成的纪要实时出现在这里）
  */
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
@@ -24,9 +24,17 @@ function flashTip(msg: string) {
   tipTimer = window.setTimeout(() => (actionTip.value = ''), 2600)
 }
 
+// 处理中的纪要每 10s 静默补拉：后端生成完成后（或对超时僵尸处理态自愈翻转后），
+// 卡片状态无需手动刷新即可收敛；全部收敛后停止轮询
+let refreshTimer: number | undefined
 onMounted(() => {
   void ensureNotesLoaded() // 直接进入本页时补拉纪要列表（已在加载中则自动去重）
+  refreshTimer = window.setInterval(() => {
+    if (classNotes.value.some((n) => n.status === 'processing')) void ensureNotesLoaded()
+    else window.clearInterval(refreshTimer)
+  }, 10000)
 })
+onUnmounted(() => window.clearInterval(refreshTimer))
 
 const search = ref('')
 const filter = ref<'all' | 'done' | 'failed'>('all')
