@@ -107,7 +107,8 @@ export interface QuizFilter {
   courseId: string
   noteId: string // 'all' 表示该课程全部章节
   types: QuizType[]
-  difficulty: QuizDifficulty | '全部'
+  /** 难度子集（可多选）；空数组表示不限难度（「全部」或三档全选） */
+  difficulties: QuizDifficulty[]
   count: number
 }
 
@@ -127,42 +128,36 @@ const PRIORITY_TYPES: QuizType[] = ['single', 'multi', 'indefinite', 'judge', 'b
 
 /**
  * 按筛选条件从题目池抽题，数量不足时逐级放宽：
- * 同课程同题型不限难度 → 同课程客观题 → 同课程不限题型 → 不限课程
+ * 同课程同题型 → 同课程客观题 → 同课程不限题型 → 不限课程。
+ * 选了难度子集时难度约束全程保留（逐级放宽只放题型 / 范围，不再拿其他难度凑数）；
+ * 不限难度时空数组恒过，兜底行为与旧版一致。
  */
 export function pickQuestions(pool: QuizQuestion[], f: QuizFilter): QuizQuestion[] {
   const base = pool.filter((t) => t.course === f.courseId && (f.noteId === 'all' || t.noteId === f.noteId))
-  const picked = shuffle(
-    base.filter((t) => f.types.includes(t.type) && (f.difficulty === '全部' || t.difficulty === f.difficulty)),
-  ).slice(0, f.count)
+  const inDiff = (t: QuizQuestion) => !f.difficulties.length || f.difficulties.includes(t.difficulty)
+  const picked = shuffle(base.filter((t) => f.types.includes(t.type) && inDiff(t))).slice(0, f.count)
 
   if (picked.length < f.count) {
     const got = new Set(picked)
-    // 同课程同题型、不限难度
-    for (const t of shuffle(base.filter((t) => f.types.includes(t.type) && !got.has(t)))) {
-      if (picked.length >= f.count) break
-      got.add(t)
-      picked.push(t)
-    }
-    // 同课程、客观题优先（选择题/判断题/填空题）
-    for (const t of shuffle(base.filter((t) => PRIORITY_TYPES.includes(t.type) && !got.has(t)))) {
-      if (picked.length >= f.count) break
-      got.add(t)
-      picked.push(t)
-    }
-    // 同课程不限题型
-    for (const t of shuffle(base.filter((t) => !got.has(t)))) {
-      if (picked.length >= f.count) break
-      got.add(t)
-      picked.push(t)
-    }
-    // 兜底：其他课程
-    if (picked.length < f.count) {
-      for (const t of shuffle(pool.filter((t) => !got.has(t)))) {
+    const take = (candidates: QuizQuestion[]) => {
+      for (const t of shuffle(candidates)) {
         if (picked.length >= f.count) break
         got.add(t)
         picked.push(t)
       }
     }
+    // 同课程同题型 → 同课程客观题优先 → 同课程不限题型
+    const stages: ((t: QuizQuestion) => boolean)[] = [
+      (t) => f.types.includes(t.type),
+      (t) => PRIORITY_TYPES.includes(t.type),
+      () => true,
+    ]
+    for (const stage of stages) {
+      take(base.filter((t) => stage(t) && inDiff(t) && !got.has(t)))
+      if (picked.length >= f.count) break
+    }
+    // 兜底：其他课程（同样尊重难度子集）
+    if (picked.length < f.count) take(pool.filter((t) => !got.has(t) && inDiff(t)))
   }
 
   return picked.slice(0, f.count)

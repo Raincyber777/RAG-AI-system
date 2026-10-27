@@ -300,11 +300,16 @@ export interface ApiSubmitResult {
 
 export const quizApi = {
   list: () => listAll<ApiQuizItem>('/quiz/'),
-  /** LLM 出题入库（types 限定题型，传后端题型名或前端别名 multi/short 均可） */
-  generate: (noteId: string, count = 5, types?: string[]) =>
+  /** LLM 出题入库（types 限定题型、difficulties 限定难度子集，传后端题型名或前端别名 multi/short 均可） */
+  generate: (noteId: string, count = 5, types?: string[], difficulties?: string[]) =>
     request<ApiQuizItem[]>('/quiz/generate/', {
       method: 'POST',
-      data: { note_id: Number(noteId), count, ...(types?.length ? { types } : {}) },
+      data: {
+        note_id: Number(noteId),
+        count,
+        ...(types?.length ? { types } : {}),
+        ...(difficulties?.length ? { difficulties } : {}),
+      },
     }),
   submit: (id: number, answer: string) =>
     request<ApiSubmitResult>(`/quiz/${id}/submit/`, { method: 'POST', data: { answer } }),

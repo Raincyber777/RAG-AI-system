@@ -55,7 +55,8 @@ const COUNTS = [5, 10, 15]
 const courseId = ref(courses.value[0] ?? '')
 const noteId = ref('all')
 const types = ref<QuizTypeGroup[]>(['choice', 'judge', 'blank'])
-const difficulty = ref<QuizDifficulty | '全部'>('全部')
+// 难度多选：空数组=全部（「全部」按钮或三档全选都归位为空，即不限难度）
+const difficulties = ref<QuizDifficulty[]>([])
 const count = ref(10)
 
 watch(courseId, () => {
@@ -76,6 +77,22 @@ function toggleType(t: QuizTypeGroup) {
   }
 }
 
+/** 难度多选：点「全部」清空子集；三档全选等同于全部（自动归位），难度子集按原样传递给后端 */
+function toggleDiff(d: QuizDifficulty | '全部') {
+  if (genState.value === 'generating') return
+  if (d === '全部') {
+    difficulties.value = []
+    return
+  }
+  const i = difficulties.value.indexOf(d)
+  if (i >= 0) {
+    difficulties.value.splice(i, 1)
+  } else {
+    difficulties.value.push(d)
+    if (difficulties.value.length === 3) difficulties.value = [] // 三档全选 = 不限难度
+  }
+}
+
 // ---------- 生成（题库来自后端 /api/quiz/，本地按条件抽题；进度动画期间并行拉取） ----------
 const GEN_STEPS = ['正在检索课堂知识片段…', '正在提炼可考点…', '正在生成交互题目…', '正在匹配来源引用…']
 const genState = ref<'idle' | 'generating' | 'error'>('idle')
@@ -90,6 +107,8 @@ const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(re
 // ---------- 题库（后端题目映射为页面题目模型，抽题数量不足时逐级放宽） ----------
 const pool = ref<QuizQuestion[]>([])
 let poolLoaded = false
+/** 本会话已按该「章节|题型|难度」组合补出过题，避免同条件重复调 LLM */
+const generatedKeys = new Set<string>()
 async function ensurePoolLoaded(): Promise<QuizQuestion[]> {
   if (isGuest.value) return []
   if (!poolLoaded) {
@@ -110,7 +129,7 @@ onMounted(() => {
 
 function filterObj(): QuizFilter {
   // 选择题大类先展开为具体题型（单选 / 多选 / 不定项），再按条件抽题
-  return { courseId: courseId.value, noteId: noteId.value, types: expandTypeGroups([...types.value]), difficulty: difficulty.value, count: count.value }
+  return { courseId: courseId.value, noteId: noteId.value, types: expandTypeGroups([...types.value]), difficulties: [...difficulties.value], count: count.value }
 }
 
 function startGenerate() {
@@ -129,23 +148,25 @@ function startGenerate() {
     try {
       const f = filterObj()
       await ensurePoolLoaded()
-      // 所选范围暂无题目时先调后端生成一批入库（已生成过则直接抽题，避免重复出题）
-      const hasForScope = pool.value.some((q) =>
-        f.noteId === 'all' ? q.course === f.courseId : q.noteId === f.noteId,
-      )
-      if (!hasForScope && !isGuest.value) {
-        const genNoteId =
-          f.noteId !== 'all'
-            ? f.noteId
-            : (notesOfCourse.value[0]?.id ?? '')
-        if (genNoteId) {
-          // 按用户勾选的题型大类出题（选择题展开为单选 / 多选 / 不定项），保证抽题范围与生成一致
-          const items = await quizApi.generate(genNoteId, Math.max(f.count, 5), expandTypeGroups([...types.value]))
-          const mapped = items.map(quizFromApi)
-          pool.value = [...pool.value, ...mapped.filter((m) => !pool.value.some((p) => p.id === m.id))]
-        }
+      let picked = pickQuestions(pool.value, f)
+      // 范围内题量不足（含指定难度后不足）时按当前题型 + 难度调后端补一批入库；
+      // 同「章节|题型|难度」组合一次会话只补一次，避免反复点击重复出题
+      const typeNames = expandTypeGroups([...types.value])
+      const genNoteId = f.noteId !== 'all' ? f.noteId : (notesOfCourse.value[0]?.id ?? '')
+      const genKey = `${genNoteId}|${typeNames.join(',')}|${f.difficulties.join(',')}`
+      if (picked.length < f.count && genNoteId && !isGuest.value && !generatedKeys.has(genKey)) {
+        generatedKeys.add(genKey)
+        // 难度子集透传给后端，出题即按所选难度生成（多选时三档混合）
+        const items = await quizApi.generate(
+          genNoteId,
+          Math.max(f.count, 5),
+          typeNames,
+          f.difficulties.length ? f.difficulties : undefined,
+        )
+        const mapped = items.map(quizFromApi)
+        pool.value = [...pool.value, ...mapped.filter((m) => !pool.value.some((p) => p.id === m.id))]
+        picked = pickQuestions(pool.value, f)
       }
-      const picked = pickQuestions(pool.value, f)
       if (!picked.length) {
         clearTimers()
         genState.value = 'error'
@@ -486,10 +507,10 @@ function detailRemove() {
                     v-for="d in DIFFICULTIES"
                     :key="d"
                     class="pill-tab"
-                    :class="{ active: difficulty === d }"
+                    :class="{ active: d === '全部' ? !difficulties.length : difficulties.includes(d) }"
                     type="button"
                     :disabled="genState === 'generating'"
-                    @click="difficulty = d"
+                    @click="toggleDiff(d)"
                   >{{ d }}</button>
                 </div>
               </div>
