@@ -182,22 +182,35 @@ export async function streamAsk(
   buf: { text: string; error: string | null; blocked?: string | null },
   sessionRef?: string,
   onStatus?: (stage: string, round?: number) => void,
+  images?: File[],
 ): Promise<ApiQaRecord | null> {
   let res: Response
   try {
-    res = await fetch(`${BASE}/qa/ask/stream/`, {
-      method: 'POST',
-      headers: {
-        'ngrok-skip-browser-warning': '1',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${getToken()}`,
-      },
-      body: JSON.stringify({
+    // 带图片附件时走 multipart（后端 /qa/ask/stream/ 支持 images[] 视觉问答），纯文本仍走 JSON
+    const headers: Record<string, string> = {
+      'ngrok-skip-browser-warning': '1',
+      Authorization: `Bearer ${getToken()}`,
+    }
+    let body: BodyInit
+    if (images?.length) {
+      const fd = buildForm(
+        {
+          question,
+          ...(noteId ? { note_id: String(Number(noteId)) } : {}),
+          ...(sessionRef ? { session_ref: sessionRef } : {}),
+        },
+        { images },
+      )
+      body = fd
+    } else {
+      headers['Content-Type'] = 'application/json'
+      body = JSON.stringify({
         ...(noteId ? { note_id: Number(noteId) } : {}),
         question,
         ...(sessionRef ? { session_ref: sessionRef } : {}),
-      }),
-    })
+      })
+    }
+    res = await fetch(`${BASE}/qa/ask/stream/`, { method: 'POST', headers, body })
   } catch {
     buf.error = '网络异常，请稍后再试'
     return null

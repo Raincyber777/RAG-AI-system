@@ -480,6 +480,7 @@ function detailRemove() {
             <div class="field">
               <label class="field-label">课程</label>
               <AppSelect v-model="courseId" :options="courseOptions" :disabled="genState === 'generating'" aria-label="选择课程" />
+              <p v-if="!courseOptions.length" class="field-tip">还没有课程：题目依据本人纪要生成，请先到「课堂纪要」上传材料并新建课程</p>
             </div>
             <div class="field">
               <label class="field-label">章节 / 知识点</label>

@@ -19,7 +19,7 @@ import { qaApi, streamAsk, type ApiQaRecord } from '@/api'
 import { BASE, getToken } from '@/api/http'
 import SafetyModal, { type SafetyNotice } from '@/components/SafetyModal.vue'
 import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from '@/mock/data'
-import { UPLOAD_KIND_META, UPLOAD_MAX_MB, detectUploadKind, formatFileSize, uploadAcceptAttr, type UploadKind } from '@/utils/uploadFormats'
+import { UPLOAD_ACCEPT, UPLOAD_KIND_META, UPLOAD_MAX_MB, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
 const route = useRoute()
 
@@ -455,6 +455,7 @@ interface AttachItem {
   kind: AttachKind
   size: string
   preview?: string
+  file?: File // 图片附件的原始文件，提问时随 multipart 上传（后端仅支持图片视觉问答）
 }
 const MAX_ATTACH = 8
 
@@ -487,7 +488,7 @@ function pickAttach() {
     closeAttachMenu()
     return
   }
-  attachAccept.value = uploadAcceptAttr   // 全部支持格式合并过滤，选中后按扩展名归类校验
+  attachAccept.value = UPLOAD_ACCEPT.image   // 问答仅支持图片视觉问答，文件选择器先按图片过滤
   closeAttachMenu()
   nextTick(() => attachInput.value?.click())
 }
@@ -503,6 +504,7 @@ function handleAttachFiles(list: FileList | null | undefined) {
   let dupCount = 0
   let badFormat = ''
   let tooBig = ''
+  let nonImage = ''
   for (const f of Array.from(list)) {
     // 最多同时添加 MAX_ATTACH 个附件（相同或不同格式合计），超出部分给出提示
     if (attachments.value.length >= MAX_ATTACH) {
@@ -512,6 +514,12 @@ function handleAttachFiles(list: FileList | null | undefined) {
     const kind = detectUploadKind(f.name)
     if (!kind) {
       badFormat = badFormat ? `${badFormat}、${f.name}` : f.name
+      continue
+    }
+    if (kind !== 'image') {
+      // 后端问答只支持图片视觉问答：音视频 / 文档在这里就拦下并说明去向，
+      // 而不是等发送后才吃 400（此前视频附件只会在气泡里空转）
+      nonImage = nonImage ? `${nonImage}、${f.name}` : f.name
       continue
     }
     if (f.size > UPLOAD_MAX_MB[kind] * 1024 * 1024) {
@@ -528,10 +536,12 @@ function handleAttachFiles(list: FileList | null | undefined) {
       kind,
       size: formatFileSize(f.size),
       preview: kind === 'image' ? URL.createObjectURL(f) : undefined,
+      file: f,
     })
     accepted++
   }
-  if (badFormat) flashAttachTip(`暂不支持此格式文件：${badFormat}`)
+  if (nonImage) flashAttachTip(`智能问答目前仅支持图片识别：${nonImage}；音视频 / 文档请到「课堂纪要」上传生成纪要后提问`)
+  else if (badFormat) flashAttachTip(`暂不支持此格式文件：${badFormat}`)
   else if (tooBig) flashAttachTip(`文件过大：${tooBig}，请压缩后再试`)
   else if (accepted === 0 && attachments.value.length < MAX_ATTACH) {
     flashAttachTip(dupCount > 0 ? '所选文件已在附件中' : '暂不支持此格式文件')
@@ -668,15 +678,19 @@ function send() {
   // 首条提问自动作为会话标题（手动重命名过的不覆盖），刷新后恢复列表时也好辨认
   const cur = qaSessions.value.find((x) => x.id === activeSessionId.value)
   if (cur && cur.title === '新的对话') cur.title = text.slice(0, 18)
+  // 图片附件随提问走 multipart 上传（后端仅支持图片视觉问答）
+  const imgFiles = attachments.value
+    .map((a) => a.file)
+    .filter((f): f is File => f instanceof File)
   // 附件随消息发出（预览地址由消息继续持有展示），输入区清空
   attachments.value = []
   input.value = ''
   scrollToBottom()
-  askQuestion(full)
+  askQuestion(full, imgFiles)
 }
 
 /** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显 */
-function askQuestion(text: string) {
+function askQuestion(text: string, images?: File[]) {
   isTyping.value = true
   backendStage.value = false // 新提问重置：阶段先走本地轮换，收到后端 status 帧再接管
   refineRound.value = 0
@@ -689,7 +703,7 @@ function askQuestion(text: string) {
   const buf: AskBuf = { text: '', error: null, blocked: null, record: null }
   askBuf = buf
   // 会话标识随提问入库（session_ref）：刷新后按会话拉回历史
-  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined, onStreamStatus)
+  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined, onStreamStatus, images)
     .then((record) => {
       buf.record = record
       if (record) {
@@ -1330,8 +1344,8 @@ onDeactivated(() => {
                 <button type="button" class="attach-opt" role="menuitem" @click="pickAttach()">
                   <span class="ao-ico tint-peach"><AppIcon name="file" :size="14" /></span>
                   <span class="ao-text">
-                    <b>上传文件</b>
-                    <i>图片 / PPT / 音频 / 视频 / 文档</i>
+                    <b>上传图片</b>
+                    <i>识别图片内容（板书 / 讲义截图等）</i>
                   </span>
                 </button>
               </div>
