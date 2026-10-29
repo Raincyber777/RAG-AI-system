@@ -52,7 +52,7 @@ const dragging = ref(false)
 const fileInput = ref<HTMLInputElement>()
 const classTitle = ref('')
 const courseName = ref('')
-const MAX_FILES = 12
+const MAX_FILES = 8 // 同时生成多份纪要会并发占用转写 / 生成线程，上限控制在服务器可承受范围
 
 // ---------- 材料勾选：先勾选材料，再把课堂主题 / 课程「应用到选中」，支持分批设置 ----------
 const checkedFiles = computed(() => inputFiles.value.filter((f) => f.checked !== false))
@@ -85,6 +85,37 @@ function effTheme(f: InputFile) {
 }
 function effCourse(f: InputFile) {
   return f.course?.trim() || courseName.value.trim()
+}
+
+// ---------- 单个材料设置：点卡片弹窗单独指定该材料的主题 / 课程（一个个设置） ----------
+const assignTarget = ref<InputFile | null>(null)
+const assignTheme = ref('')
+const assignCourse = ref('')
+function openAssign(f: InputFile) {
+  assignTarget.value = f
+  assignTheme.value = f.theme ?? ''
+  assignCourse.value = f.course ?? ''
+}
+function saveAssign() {
+  const f = assignTarget.value
+  if (!f) return
+  const t = assignTheme.value.trim()
+  const c = assignCourse.value.trim()
+  if (t) f.theme = t
+  else delete f.theme
+  if (c) f.course = c
+  else delete f.course
+  assignTarget.value = null
+  flashZoneTip(t || c ? `已为「${f.name}」单独设置${[t && '主题', c && '课程'].filter(Boolean).join(' / ')}` : `已清除「${f.name}」的单独设置，将使用默认值`)
+}
+function clearAssign() {
+  const f = assignTarget.value
+  if (!f) return
+  delete f.theme
+  delete f.course
+  assignTheme.value = ''
+  assignCourse.value = ''
+  flashZoneTip(`已清除「${f.name}」的单独设置，将使用默认值`)
 }
 
 // ---------- 所属课程：优先从课程表下拉选择，点“+”可新建（新课程同步到全局课程表） ----------
@@ -813,13 +844,24 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="file-list">
-              <div v-for="f in inputFiles" :key="f.id" class="file-item" :class="{ unchecked: f.checked === false }">
+              <!-- 点卡片弹窗单独设置该材料的主题 / 课程；勾选区与移除按钮不冒泡 -->
+              <div
+                v-for="f in inputFiles"
+                :key="f.id"
+                class="file-item"
+                :class="{ unchecked: f.checked === false }"
+                role="button"
+                tabindex="0"
+                :aria-label="`设置材料 ${f.name} 的课堂主题与所属课程`"
+                @click="openAssign(f)"
+                @keydown.enter.prevent="openAssign(f)"
+              >
                 <div class="fi-top">
                   <img v-if="f.preview" :src="f.preview" class="file-thumb" alt="图片预览" />
                   <span v-else class="file-badge" :class="KIND_META[f.kind].tint">
                     <AppIcon :name="KIND_META[f.kind].icon" :size="15" />
                   </span>
-                  <button class="icon-btn" aria-label="移除该材料" @click="removeFile(f.id)"><AppIcon name="x" :size="14" /></button>
+                  <button class="icon-btn" aria-label="移除该材料" @click.stop="removeFile(f.id)"><AppIcon name="x" :size="14" /></button>
                 </div>
                 <div class="file-name ellipsis" :title="f.name">{{ f.name }}</div>
                 <div class="file-meta">{{ KIND_META[f.kind].label }} · {{ f.size }}</div>
@@ -829,7 +871,7 @@ onBeforeUnmount(() => {
                   role="checkbox"
                   :aria-checked="f.checked !== false"
                   tabindex="0"
-                  @click.prevent="toggleCheck(f)"
+                  @click.stop.prevent="toggleCheck(f)"
                   @keydown.enter.prevent="toggleCheck(f)"
                   @keydown.space.prevent="toggleCheck(f)"
                 >
@@ -1077,6 +1119,30 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- 单个材料设置弹窗：点卡片单独指定主题 / 课程（留空回退默认值） -->
+    <div v-if="assignTarget" class="modal-mask" @click.self="assignTarget = null">
+      <div class="modal modal-sm">
+        <div class="modal-title">设置这份材料的信息</div>
+        <p class="modal-sub assign-file ellipsis" :title="assignTarget.name">{{ assignTarget.name }}</p>
+        <div class="field">
+          <label class="field-label" for="assign-theme">课堂主题</label>
+          <input id="assign-theme" v-model="assignTheme" class="input" placeholder="留空则使用默认主题" maxlength="60" />
+        </div>
+        <div class="field">
+          <span class="field-label">所属课程</span>
+          <AppSelect v-model="assignCourse" :options="courseOptions" placeholder="留空则使用默认课程" aria-label="这份材料的所属课程" />
+        </div>
+        <p class="assign-default-hint">
+          当前默认：主题「{{ classTitle.trim() || '未填' }}」 · 课程「{{ courseName.trim() || '未选' }}」。生成完成后纪要会自动归入各自所选的课程。
+        </p>
+        <div class="modal-actions">
+          <button v-if="assignTarget.theme || assignTarget.course" class="btn btn-ghost assign-clear" type="button" @click="clearAssign">清除单独设置</button>
+          <button class="btn btn-secondary" @click="assignTarget = null">取消</button>
+          <button class="btn btn-primary" @click="saveAssign">保存</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 删除课程警示弹窗：删除将连带清除该课程全部相关记录 -->
     <div v-if="deleteCourseTarget" class="modal-mask" @click.self="deleteCourseTarget = ''">
       <div class="modal modal-sm">
@@ -1217,7 +1283,10 @@ onBeforeUnmount(() => {
   width: 192px; flex-shrink: 0;
   display: flex; flex-direction: column; gap: 7px; padding: 10px 12px;
   background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--radius-md);
+  cursor: pointer; transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+.file-item:hover { border-color: var(--primary); box-shadow: 0 1px 6px rgba(124, 58, 237, 0.10); }
+.file-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .fi-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .file-thumb { width: 32px; height: 32px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; }
 .file-badge {
@@ -1308,6 +1377,14 @@ onBeforeUnmount(() => {
 /* 应用到选中：批量把主题 / 课程设置给勾选的材料 */
 .apply-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .apply-hint { font-size: 12px; color: var(--stone); line-height: 1.5; }
+
+/* 单个材料设置弹窗 */
+.assign-file {
+  font-weight: 600; color: var(--ink);
+  background: var(--surface); border-radius: var(--radius-sm); padding: 6px 10px;
+}
+.assign-default-hint { font-size: 12px; color: var(--stone); line-height: 1.6; }
+.assign-clear { margin-right: auto; }
 .stopped-tip { margin-top: 10px; font-size: 12.5px; color: var(--error); }
 .btn-del { background: var(--error); color: #fff; }
 .btn-del:hover { background: #b42318; }

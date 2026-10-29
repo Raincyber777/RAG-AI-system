@@ -163,6 +163,8 @@ export function addClassNote(note: ClassNote) {
 
 export function updateNote(id: string, patch: Partial<ClassNote>) {
   classNotes.value = classNotes.value.map((n) => (n.id === id ? { ...n, ...patch } : n))
+  // 后台补拉的新纪要可能带来新课程（批量生成时各材料可属不同课程），同步进课程表
+  if (patch.course && !courseList.value.includes(patch.course)) courseList.value.push(patch.course)
 }
 
 /** 删除纪要（本地立即移除；调用方负责调用后端删除） */
