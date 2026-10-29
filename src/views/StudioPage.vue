@@ -12,7 +12,7 @@ import { useRoute, useRouter } from 'vue-router'
 defineOptions({ name: 'StudioPage' })
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
-import { addClassNote, findNote, courseList, addCourse, classNotes, removeCourse, renameCourse, ensureNotesLoaded, noteFromApi } from '@/store/study'
+import { addClassNote, findNote, updateNote, removeClassNote, courseList, addCourse, classNotes, removeCourse, renameCourse, ensureNotesLoaded, noteFromApi } from '@/store/study'
 import { notesApi, type ApiNote } from '@/api'
 import { ApiError } from '@/api/http'
 import { wrongBook } from '@/store/quiz'
@@ -40,6 +40,9 @@ interface InputFile {
   size: string
   preview?: string
   file?: File // 原始文件（创建纪要时随表单提交给后端）
+  checked?: boolean // 是否勾选参与生成（缺省视为已勾选，兼容回看态的临时条目）
+  theme?: string // 单独设置的课堂主题（未设置时用下方默认输入）
+  course?: string // 单独设置的所属课程
 }
 
 const KIND_META = UPLOAD_KIND_META
@@ -50,6 +53,39 @@ const fileInput = ref<HTMLInputElement>()
 const classTitle = ref('')
 const courseName = ref('')
 const MAX_FILES = 12
+
+// ---------- 材料勾选：先勾选材料，再把课堂主题 / 课程「应用到选中」，支持分批设置 ----------
+const checkedFiles = computed(() => inputFiles.value.filter((f) => f.checked !== false))
+const checkedCount = computed(() => checkedFiles.value.length)
+function toggleCheck(f: InputFile) {
+  f.checked = f.checked === false
+}
+function toggleAllChecked() {
+  const allOn = checkedCount.value === inputFiles.value.length
+  for (const f of inputFiles.value) f.checked = allOn ? false : true
+}
+function applyToChecked() {
+  if (!checkedCount.value) return
+  const t = classTitle.value.trim()
+  const c = courseName.value.trim()
+  if (!t && !c) {
+    flashZoneTip('请先填写课堂主题或选择所属课程，再应用到选中的材料')
+    return
+  }
+  for (const f of inputFiles.value) {
+    if (f.checked === false) continue
+    if (t) f.theme = t
+    if (c) f.course = c
+  }
+  flashZoneTip(`已把${[t && '主题', c && '课程'].filter(Boolean).join(' / ')}应用到选中的 ${checkedCount.value} 个材料`)
+}
+/** 该材料的实际生成参数：单独设置过用单独值，否则回退默认输入 */
+function effTheme(f: InputFile) {
+  return f.theme?.trim() || classTitle.value.trim()
+}
+function effCourse(f: InputFile) {
+  return f.course?.trim() || courseName.value.trim()
+}
 
 // ---------- 所属课程：优先从课程表下拉选择，点“+”可新建（新课程同步到全局课程表） ----------
 const courseOptions = computed(() => courseList.value.map((c) => ({ label: c, value: c })))
@@ -222,16 +258,17 @@ const kindCount = computed(() => {
 })
 const canStart = computed(
   () =>
-    inputFiles.value.length > 0 &&
-    classTitle.value.trim() !== '' &&
-    courseName.value.trim() !== '' && // 所属课程必填
+    checkedFiles.value.length > 0 &&
+    checkedFiles.value.every((f) => effTheme(f) !== '') &&
+    checkedFiles.value.every((f) => effCourse(f) !== '') && // 主题 / 课程必填（单独设置或默认值均可）
     (genState.value === 'idle' || genState.value === 'done' || genState.value === 'stopped')
 )
 // 生成按钮旁的缺项提示（按缺失顺序给出第一条）
 const startHint = computed(() => {
   if (!inputFiles.value.length) return '请先上传课堂材料'
-  if (!classTitle.value.trim()) return '请填写课堂主题'
-  if (!courseName.value.trim()) return '请选择所属课程'
+  if (!checkedCount.value) return '请先勾选要生成纪要的材料'
+  if (!checkedFiles.value.every((f) => effTheme(f))) return '请填写课堂主题（或应用到选中材料）'
+  if (!checkedFiles.value.every((f) => effCourse(f))) return '请选择所属课程（或应用到选中材料）'
   return ''
 })
 
@@ -311,7 +348,6 @@ function sectionVisible(key: SectionKey) {
 }
 
 // ---------- 生成请求：动画进行的同时把材料提交给后端，返回完整纪要后进入流式渲染 ----------
-let createPromise: Promise<ApiNote> | null = null
 const genError = ref('')
 
 // ---------- 流程控制 ----------
@@ -321,14 +357,45 @@ let revealTimer: number | null = null
 // 真实流水线状态轮询（后端 processing → done / failed）
 let pollTimer: number | null = null
 let pollCount = 0
+// 多材料生成：主材料在右侧流式展示，其余勾选材料后台轮询收敛（「我的纪要」同步可见）
+let extrasTimer: number | null = null
+let extrasPollCount = 0
+const extrasPending = ref(0)
 
-function clearAllTimers() {
+/** 清主流程计时器（步骤动画 / 打字机 / 主材料轮询）；后台材料补拉不属于主流程，单独清理 */
+function clearMainTimers() {
   for (const t of stepTimers) window.clearTimeout(t)
   stepTimers.length = 0
   if (typeTimer) { window.clearInterval(typeTimer); typeTimer = null }
   if (revealTimer) { window.clearInterval(revealTimer); revealTimer = null }
   if (zoneTipTimer) { window.clearTimeout(zoneTipTimer); zoneTipTimer = undefined }
   if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null }
+}
+
+function clearAllTimers() {
+  clearMainTimers()
+  if (extrasTimer) { window.clearInterval(extrasTimer); extrasTimer = null }
+}
+
+/** 后台轮询其余勾选材料的生成状态：done / failed 都同步进 store，全部收敛后停止 */
+function pollExtras(list: ApiNote[]) {
+  extrasPollCount = 0
+  const pending = new Set(list.map((n) => n.id))
+  extrasTimer = window.setInterval(() => {
+    extrasPollCount++
+    if (extrasPollCount > 150 || !pending.size) { // 约 10 分钟放弃补拉（「我的纪要」页还有 10s 兜底轮询）
+      if (extrasTimer) { window.clearInterval(extrasTimer); extrasTimer = null }
+      extrasPending.value = 0
+      return
+    }
+    for (const id of [...pending]) {
+      void notesApi.detail(String(id)).then((n) => {
+        updateNote(String(n.id), noteFromApi(n))
+        if (n.status !== 'processing') pending.delete(n.id)
+        extrasPending.value = pending.size
+      }).catch(() => { /* 网络抖动下一轮再拉 */ })
+    }
+  }, 4000)
 }
 
 function runSteps() {
@@ -452,6 +519,28 @@ function updateNoteRef(id: string) {
   if (saved) note.value = saved
 }
 
+// ---------- 丢弃纪要（生成完成后可不保存到「我的纪要」） ----------
+const showDiscardConfirm = ref(false)
+const discarding = ref(false)
+async function confirmDiscard() {
+  const id = savedId.value
+  if (!id || discarding.value) return
+  discarding.value = true
+  try {
+    await notesApi.remove(id) // 先删后端（连同材料文件），失败则保留现场便于重试
+  } catch {
+    discarding.value = false
+    showDiscardConfirm.value = false
+    flashZoneTip('丢弃失败，请稍后重试')
+    return
+  }
+  discarding.value = false
+  showDiscardConfirm.value = false
+  removeClassNote(id)
+  resetAll()
+  flashZoneTip('已丢弃该纪要，不会出现在「我的纪要」')
+}
+
 function startGenerate() {
   if (!canStart.value) return
   // 清除可能残留的回看 query：生成新纪要后从其他页面返回时应保持新现场，而非误切回看旧纪要
@@ -464,58 +553,76 @@ function startGenerate() {
   savedId.value = null
   note.value = null
   genError.value = ''
+  extrasPending.value = 0
   steps.value = buildSteps(inputFiles.value)
   genState.value = 'running'
 
-  // 材料随表单提交给后端创建纪要（内容暂由占位流水线生成）；返回完整纪要后进入流式渲染
-  const primary = inputFiles.value.find((f) => f.file)?.file
-  createPromise = notesApi.create(
-    { course: courseName.value.trim(), title: classTitle.value.trim(), duration: '' },
-    primary,
+  // 每个勾选且带文件的材料各建一份纪要：主题 / 课程优先用该材料单独设置的值，未设置时用上方默认值
+  const targets = checkedFiles.value.filter((f) => f.file)
+  if (!targets.length) { // 兜底：canStart 已拦截勾选为空的情况，这里防无文件勾选项
+    genState.value = 'stopped'
+    genError.value = '请先上传要生成纪要的材料'
+    return
+  }
+  const creates = targets.map((f) =>
+    notesApi
+      .create({ course: effCourse(f), title: effTheme(f), duration: '' }, f.file)
+      .then((n) => ({ ok: true as const, n }))
+      .catch((e: unknown) => ({ ok: false as const, e })),
   )
-  createPromise.then(
-    (apiNote) => {
-      if (genState.value !== 'running') return // 用户已停止 / 重置
-      if (apiNote.status === 'processing') {
-        // 真实流水线进行中（转写 / 生成耗时数十秒）：轮询详情直至完成，
-        // 步骤条停在「生成纪要」running，内容就绪后再进入流式渲染
-        pollCount = 0
-        pollTimer = window.setInterval(async () => {
-          pollCount++
-          if (pollCount > 150) { // 约 10 分钟仍未完成
-            clearAllTimers()
-            genState.value = 'stopped'
-            genError.value = '生成超时，请稍后在「我的纪要」查看状态或重新处理'
-            return
-          }
-          try {
-            const n = await notesApi.detail(String(apiNote.id))
-            if (n.status === 'done') {
-              clearAllTimers()
-              note.value = noteFromApi(n)
-              tryBeginStreaming()
-            } else if (n.status === 'failed') {
-              clearAllTimers()
-              genState.value = 'stopped'
-              // 后端已写入面向用户的失败原因（如「未识别到语音内容」），有则优先展示
-              genError.value = n.fail_reason
-                ? `生成失败：${n.fail_reason}`
-                : '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
-            }
-          } catch { /* 网络抖动等下一轮 */ }
-        }, 4000)
-        return
-      }
-      note.value = noteFromApi(apiNote)
-      tryBeginStreaming()
-    },
-    (e: unknown) => {
-      if (genState.value !== 'running') return
+  Promise.all(creates).then((results) => {
+    if (genState.value !== 'running') return // 用户已停止 / 重置
+    const okList = results
+      .filter((r): r is { ok: true; n: ApiNote } => r.ok)
+      .map((r) => r.n)
+    const failed = results.find((r): r is { ok: false; e: unknown } => !r.ok)
+    if (!okList.length) {
       clearAllTimers()
       genState.value = 'stopped'
-      genError.value = e instanceof ApiError ? e.message : '生成请求失败，请确认后端已启动'
-    },
-  )
+      genError.value = failed && failed.e instanceof ApiError ? failed.e.message : '生成请求失败，请确认后端已启动'
+      return
+    }
+    if (failed) genError.value = `${results.length - okList.length} 个材料提交失败，其余正在正常生成`
+    // 第一个成功的材料作为主材料在右侧流式展示，其余交给后台补拉（「我的纪要」同步收敛）
+    const [head, ...rest] = okList
+    if (!head) return // okList 非空才走到这里
+    if (rest.length) {
+      extrasPending.value = rest.length
+      pollExtras(rest)
+    }
+    if (head.status === 'processing') {
+      // 真实流水线进行中（转写 / 生成耗时数十秒）：轮询详情直至完成，
+      // 步骤条停在「生成纪要」running，内容就绪后再进入流式渲染
+      pollCount = 0
+      pollTimer = window.setInterval(async () => {
+        pollCount++
+        if (pollCount > 150) { // 约 10 分钟仍未完成
+          clearMainTimers() // 后台材料的补拉不受影响，继续收敛
+          genState.value = 'stopped'
+          genError.value = '生成超时，请稍后在「我的纪要」查看状态或重新处理'
+          return
+        }
+        try {
+          const n = await notesApi.detail(String(head.id))
+          if (n.status === 'done') {
+            clearMainTimers()
+            note.value = noteFromApi(n)
+            tryBeginStreaming()
+          } else if (n.status === 'failed') {
+            clearMainTimers()
+            genState.value = 'stopped'
+            // 后端已写入面向用户的失败原因（如「未识别到语音内容」），有则优先展示
+            genError.value = n.fail_reason
+              ? `生成失败：${n.fail_reason}`
+              : '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
+          }
+        } catch { /* 网络抖动等下一轮 */ }
+      }, 4000)
+      return
+    }
+    note.value = noteFromApi(head)
+    tryBeginStreaming()
+  })
   runSteps()
 }
 
@@ -534,6 +641,7 @@ function resetAll() {
   savedId.value = null
   steps.value = []
   genError.value = ''
+  extrasPending.value = 0
   themeShown.value = ''
   headersShown.value = []
   for (const k of Object.keys(itemsShown)) itemsShown[k] = 0
@@ -554,20 +662,18 @@ function citeIcon(cite: string) {
   return cite.startsWith('录音') ? 'headphones' : 'image'
 }
 function showSource(cite: string) {
+  // 只有录音引用可打开（模板中板书 / PPT 引用已是纯文本）；展示该时间点的转写原文
+  if (!cite.startsWith('录音')) return
   if (activeSource.value?.cite === cite) { activeSource.value = null; return }
   const n = note.value
-  // 转写行带 [mm:ss] 时可定位到录音原文；否则回退通用说明
+  // 转写行带 [mm:ss] 时定位到对应原文；找不到或无转写时给出兜底说明
   let snippet = ''
-  if (cite.startsWith('录音') && n?.transcript) {
+  if (n?.transcript) {
     const ts = cite.replace('录音 ', '')
     const line = n.transcript.split('\n').find((l) => l.startsWith(`[${ts}]`))
     if (line) snippet = `「${n.title}」录音 ${ts} 处原文：${line.replace(/^\[\d{1,2}:\d{2}\]\s*/, '')}`
   }
-  if (!snippet) {
-    snippet = cite.startsWith('录音')
-      ? `「${n?.title ?? '本节课'}」录音 ${cite.replace('录音 ', '')} 处原文`
-      : `「${n?.title ?? '本节课'}」${cite} 原图：${cite.startsWith('PPT') ? '幻灯片页面' : '板书照片'}，已由多模态模型识别出标题、公式与批注文字。`
-  }
+  if (!snippet) snippet = `「${n?.title ?? '本节课'}」录音 ${cite.replace('录音 ', '')} 处原文`
   activeSource.value = { cite, snippet }
 }
 
@@ -687,21 +793,27 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="zoneTip" class="zone-tip"><AppIcon name="alert" :size="13" /> {{ zoneTip }}</p>
 
-          <!-- 材料清单：横向滚动卡片条，最多 12 个 -->
+          <!-- 材料清单：横向滚动卡片条，最多 12 个；可勾选部分材料单独设置主题 / 课程 -->
           <div v-if="inputFiles.length" class="queue">
             <div class="fl-head">
-              <span class="text-caption">已选 {{ inputFiles.length }} 个材料</span>
-              <button
-                class="fl-clear"
-                type="button"
-                :disabled="genState === 'running' || genState === 'streaming'"
-                @click="showClearConfirm = true"
-              >
-                <AppIcon name="trash" :size="13" /> 全部清空
-              </button>
+              <span class="text-caption">已选 {{ checkedCount }} / {{ inputFiles.length }} 个材料</span>
+              <div class="fl-head-actions">
+                <button class="fl-clear" type="button" @click="toggleAllChecked">
+                  <AppIcon :name="checkedCount === inputFiles.length ? 'square' : 'check'" :size="13" />
+                  {{ checkedCount === inputFiles.length ? '全不选' : '全选' }}
+                </button>
+                <button
+                  class="fl-clear"
+                  type="button"
+                  :disabled="genState === 'running' || genState === 'streaming'"
+                  @click="showClearConfirm = true"
+                >
+                  <AppIcon name="trash" :size="13" /> 全部清空
+                </button>
+              </div>
             </div>
             <div class="file-list">
-              <div v-for="f in inputFiles" :key="f.id" class="file-item">
+              <div v-for="f in inputFiles" :key="f.id" class="file-item" :class="{ unchecked: f.checked === false }">
                 <div class="fi-top">
                   <img v-if="f.preview" :src="f.preview" class="file-thumb" alt="图片预览" />
                   <span v-else class="file-badge" :class="KIND_META[f.kind].tint">
@@ -711,6 +823,24 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="file-name ellipsis" :title="f.name">{{ f.name }}</div>
                 <div class="file-meta">{{ KIND_META[f.kind].label }} · {{ f.size }}</div>
+                <!-- 勾选参与生成：点击卡片下沿的复选区切换，取消勾选的材料不参与本次生成 -->
+                <label
+                  class="fi-check"
+                  role="checkbox"
+                  :aria-checked="f.checked !== false"
+                  tabindex="0"
+                  @click.prevent="toggleCheck(f)"
+                  @keydown.enter.prevent="toggleCheck(f)"
+                  @keydown.space.prevent="toggleCheck(f)"
+                >
+                  <span class="fi-check-box" :class="{ on: f.checked !== false }">
+                    <AppIcon v-if="f.checked !== false" name="check" :size="10" />
+                  </span>
+                  参与生成
+                </label>
+                <div v-if="f.theme || f.course" class="file-assign ellipsis" :title="`${f.theme || '默认主题'} · ${f.course || '默认课程'}`">
+                  {{ f.theme || '默认主题' }} · {{ f.course || '默认课程' }}
+                </div>
               </div>
             </div>
           </div>
@@ -757,6 +887,18 @@ onBeforeUnmount(() => {
               </div>
               <p v-if="courseError" class="course-err"><AppIcon name="alert" :size="12" /> {{ courseError }}</p>
             </div>
+          </div>
+
+          <!-- 应用到选中：把上方主题 / 课程批量设置给勾选的材料（支持分批设置不同材料） -->
+          <div v-if="inputFiles.length" class="apply-row">
+            <button
+              class="btn btn-ghost btn-sm"
+              :disabled="!checkedCount || genState === 'running' || genState === 'streaming'"
+              @click="applyToChecked"
+            >
+              <AppIcon name="check" :size="13" /> 应用到选中（{{ checkedCount }}）
+            </button>
+            <span class="apply-hint">先在材料清单勾选，再把课堂主题 / 所属课程应用到选中；未单独设置的材料使用上方默认值</span>
           </div>
 
           <!-- 操作区 -->
@@ -818,6 +960,9 @@ onBeforeUnmount(() => {
               <div v-if="genError" class="gen-error" role="alert">{{ genError }}</div>
             </div>
             <div v-if="genState === 'done' && note" class="flex gap-xs">
+              <button class="btn btn-ghost btn-sm" :disabled="discarding" @click="showDiscardConfirm = true">
+                <AppIcon name="trash" :size="14" /> 丢弃
+              </button>
               <button class="btn btn-secondary btn-sm" @click="exportNote"><AppIcon name="download" :size="14" /> 导出 Markdown</button>
               <button class="btn btn-primary btn-sm" @click="goQA"><AppIcon name="chat" :size="14" /> 智能问答</button>
             </div>
@@ -855,9 +1000,11 @@ onBeforeUnmount(() => {
                 <li v-for="(p, i) in note?.points || []" :key="i" v-show="i < shown('points')" class="n-item" :class="{ fresh: genState === 'streaming' }">
                   <span class="n-bullet"></span>
                   <span class="flex-1">{{ p.text }}</span>
-                  <button class="cite-chip" :aria-label="'查看来源：' + p.cite" @click="showSource(p.cite)">
-                    <AppIcon :name="citeIcon(p.cite)" :size="12" /> {{ p.cite }}
+                  <!-- 录音引用可点击定位转写原文；板书 / PPT 引用仅作来源标注（弹窗无附加信息，已去掉） -->
+                  <button v-if="p.cite.startsWith('录音')" class="cite-chip" :aria-label="'查看录音原文：' + p.cite" @click="showSource(p.cite)">
+                    <AppIcon name="headphones" :size="12" /> {{ p.cite }}
                   </button>
+                  <span v-else-if="p.cite" class="cite-chip static"><AppIcon :name="citeIcon(p.cite)" :size="12" /> {{ p.cite }}</span>
                 </li>
               </ul>
 
@@ -866,9 +1013,10 @@ onBeforeUnmount(() => {
                   <div class="def-term">{{ d.term }}</div>
                   <div class="def-detail">
                     {{ d.detail }}
-                    <button v-if="d.cite" class="cite-chip" :aria-label="'查看来源：' + d.cite" @click="showSource(d.cite)">
-                      <AppIcon :name="citeIcon(d.cite)" :size="12" /> {{ d.cite }}
+                    <button v-if="d.cite && d.cite.startsWith('录音')" class="cite-chip" :aria-label="'查看录音原文：' + d.cite" @click="showSource(d.cite)">
+                      <AppIcon name="headphones" :size="12" /> {{ d.cite }}
                     </button>
+                    <span v-else-if="d.cite" class="cite-chip static"><AppIcon :name="citeIcon(d.cite)" :size="12" /> {{ d.cite }}</span>
                   </div>
                 </li>
               </ul>
@@ -882,10 +1030,13 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <p v-if="genState === 'done' && note" class="note-foot">已存入「我的纪要」，知识片段 {{ note.chunkCount }} 条 · 关键帧 {{ note.keyframes }} 张</p>
+          <p v-if="genState === 'done' && note" class="note-foot">
+            已存入「我的纪要」，知识片段 {{ note.chunkCount }} 条 · 关键帧 {{ note.keyframes }} 张
+            <span v-if="extrasPending > 0"> · 其余 {{ extrasPending }} 个材料仍在后台生成，完成后可在「我的纪要」查看</span>
+          </p>
         </div>
 
-        <!-- 引用溯源卡片 -->
+        <!-- 引用溯源卡片：仅录音引用可打开（定位转写原文），板书 / PPT 引用为纯文本标注 -->
         <Transition name="pop">
           <div v-if="activeSource" class="card source-card" role="dialog" aria-label="引用来源详情">
             <div class="source-head">
@@ -907,6 +1058,21 @@ onBeforeUnmount(() => {
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="showClearConfirm = false">取消</button>
           <button class="btn btn-danger" @click="confirmClearFiles">确认清空</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 丢弃纪要确认弹窗：不保存到「我的纪要」并删除后端记录 -->
+    <div v-if="showDiscardConfirm" class="modal-mask" @click.self="showDiscardConfirm = false">
+      <div class="modal modal-sm">
+        <div class="modal-title">不保存这份纪要？</div>
+        <p class="modal-sub">丢弃后会删除这份纪要及其材料文件，它不会出现在「我的纪要」中，且<strong>不可恢复</strong>。</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" @click="showDiscardConfirm = false">再想想</button>
+          <button class="btn btn-danger" :disabled="discarding" @click="confirmDiscard">
+            <span v-if="discarding" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+            确认丢弃
+          </button>
         </div>
       </div>
     </div>
@@ -1031,6 +1197,7 @@ onBeforeUnmount(() => {
 /* 材料清单：横向滚动卡片条（最多 12 个，拖动滚动条查看） */
 .queue { display: flex; flex-direction: column; gap: 4px; }
 .fl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fl-head-actions { display: flex; align-items: center; gap: 4px; }
 .fl-clear {
   display: inline-flex; align-items: center; gap: 4px;
   font-family: inherit; font-size: 12px; font-weight: 500; color: var(--stone);
@@ -1059,6 +1226,27 @@ onBeforeUnmount(() => {
 }
 .file-name { font-size: 12.5px; font-weight: 500; }
 .file-meta { font-size: 11.5px; color: var(--stone); }
+/* 勾选参与生成：取消勾选的卡片整体淡化，不参与本次生成 */
+.file-item.unchecked { opacity: 0.55; }
+.fi-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 500; color: var(--slate);
+  cursor: pointer; user-select: none; width: fit-content;
+}
+.fi-check:hover { color: var(--primary); }
+.fi-check:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+.fi-check-box {
+  width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0;
+  border: 1.5px solid var(--hairline-strong); background: var(--canvas);
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  transition: all 0.12s ease;
+}
+.fi-check-box.on { background: var(--primary); border-color: var(--primary); }
+/* 单独设置过主题 / 课程的卡片显示分配结果 */
+.file-assign {
+  font-size: 11px; color: var(--brand-purple-800); background: var(--tint-lavender);
+  border-radius: var(--radius-sm); padding: 2.5px 7px;
+}
 .icon-btn {
   border: none; background: transparent; color: var(--stone);
   padding: 6px; border-radius: var(--radius-sm); display: flex; cursor: pointer;
@@ -1117,6 +1305,9 @@ onBeforeUnmount(() => {
 
 .gen-actions { display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid var(--hairline-soft); flex-wrap: wrap; }
 .gen-hint { font-size: 12px; color: var(--stone); }
+/* 应用到选中：批量把主题 / 课程设置给勾选的材料 */
+.apply-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.apply-hint { font-size: 12px; color: var(--stone); line-height: 1.5; }
 .stopped-tip { margin-top: 10px; font-size: 12.5px; color: var(--error); }
 .btn-del { background: var(--error); color: #fff; }
 .btn-del:hover { background: #b42318; }
@@ -1168,15 +1359,16 @@ onBeforeUnmount(() => {
 .emph { background: var(--tint-yellow-bold); border-radius: var(--radius-sm); padding: 7px 11px; font-size: 13px; }
 .emph-ico { color: var(--brand-brown); margin-top: 3px; flex-shrink: 0; }
 
-/* 引用角标 */
+/* 引用角标：录音引用为按钮（定位转写原文），板书 / PPT 为纯文本标注 */
 .cite-chip {
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 6px;
   font-size: 11.5px; font-weight: 600; font-family: inherit;
   color: var(--link-blue); background: var(--tint-sky);
   border: none; border-radius: var(--radius-full); padding: 2.5px 9px;
-  cursor: pointer; transition: all 0.15s ease;
 }
-.cite-chip:hover { background: var(--primary); color: #fff; }
+button.cite-chip { cursor: pointer; transition: all 0.15s ease; }
+button.cite-chip:hover { background: var(--primary); color: #fff; }
+.cite-chip.static { color: var(--steel); background: var(--surface); }
 
 /* 新浮现条目的入场动画 */
 .fresh { animation: item-in 0.35s ease both; }

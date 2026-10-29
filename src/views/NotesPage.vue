@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 我的纪要：课堂纪要卡片管理
- * 查看（工作台回看）/ 追问 / 导出 Markdown / 删除（确认弹窗）/ 失败重试
+ * 查看（弹窗就地展示，不再跳转工作台）/ 追问 / 导出 Markdown / 删除（确认弹窗）/ 失败重试
  * 数据来自共享 store（工作台新生成的纪要实时出现在这里）
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
@@ -75,10 +75,13 @@ const statusText: Record<ClassNote['status'], string> = {
   failed: '处理失败',
 }
 
+// 查看纪要：弹窗就地展示完整内容（不再跳转课堂纪要工作台）
+const viewTarget = ref<ClassNote | null>(null)
 function viewNote(n: ClassNote) {
-  router.push({ path: '/studio', query: { note: n.id } })
+  viewTarget.value = n
 }
 function goQA(n: ClassNote) {
+  viewTarget.value = null
   router.push({ path: '/qa', query: { note: n.id } })
 }
 function exportNote(n: ClassNote) {
@@ -206,6 +209,72 @@ async function retryNote(n: ClassNote) {
         </div>
       </div>
     </div>
+
+    <!-- 查看纪要弹窗：就地展示完整内容（课程主题 / 知识点 / 定义 / 重点 / 转写原文） -->
+    <div v-if="viewTarget" class="modal-mask" @click.self="viewTarget = null">
+      <div class="modal note-modal">
+        <div class="nm-head">
+          <div class="nm-tags">
+            <span class="tag tag-purple">{{ viewTarget.course }}</span>
+            <span class="tag" :class="statusTag[viewTarget.status]">{{ statusText[viewTarget.status] }}</span>
+          </div>
+          <button class="nm-close" type="button" aria-label="关闭纪要弹窗" @click="viewTarget = null">
+            <AppIcon name="x" :size="16" />
+          </button>
+        </div>
+        <div class="nm-title">{{ viewTarget.title }}</div>
+        <div class="nm-body">
+          <template v-if="viewTarget.status === 'done'">
+            <p v-if="viewTarget.theme" class="nm-theme">{{ viewTarget.theme }}</p>
+            <section v-if="viewTarget.points.length" class="nm-sec">
+              <div class="nm-sec-head"><AppIcon name="book" :size="14" /> 核心知识点</div>
+              <ul class="nm-list">
+                <li v-for="(p, i) in viewTarget.points" :key="i" class="nm-item">
+                  <span class="nm-bullet"></span>
+                  <span class="flex-1">{{ p.text }}</span>
+                  <span v-if="p.cite" class="nm-cite"><AppIcon :name="p.cite.startsWith('录音') ? 'headphones' : 'image'" :size="12" /> {{ p.cite }}</span>
+                </li>
+              </ul>
+            </section>
+            <section v-if="viewTarget.definitions.length" class="nm-sec">
+              <div class="nm-sec-head"><AppIcon name="quote" :size="14" /> 重要定义与公式</div>
+              <ul class="nm-list">
+                <li v-for="(d, i) in viewTarget.definitions" :key="i" class="nm-item def">
+                  <div class="flex-1">
+                    <div class="nm-def-term">{{ d.term }}</div>
+                    <div class="nm-def-detail">
+                      {{ d.detail }}
+                      <span v-if="d.cite" class="nm-cite"><AppIcon :name="d.cite.startsWith('录音') ? 'headphones' : 'image'" :size="12" /> {{ d.cite }}</span>
+                    </div>
+                  </div>
+                </li>
+              </ul>
+            </section>
+            <section v-if="viewTarget.emphasized.length" class="nm-sec">
+              <div class="nm-sec-head"><AppIcon name="alert" :size="14" /> 重点问题</div>
+              <ul class="nm-list">
+                <li v-for="(e, i) in viewTarget.emphasized" :key="i" class="nm-item emph"><AppIcon name="alert" :size="13" class="emph-ico" /><span class="flex-1">{{ e }}</span></li>
+              </ul>
+            </section>
+            <details v-if="viewTarget.transcript" class="nm-transcript">
+              <summary>转写原文（{{ viewTarget.transcript.length }} 字）</summary>
+              <pre>{{ viewTarget.transcript }}</pre>
+            </details>
+          </template>
+          <p v-else-if="viewTarget.status === 'failed'" class="nm-state">
+            生成失败：{{ viewTarget.failReason || '材料处理未成功，可回到卡片上点击「重新处理」再试。' }}
+          </p>
+          <p v-else class="nm-state muted">正在处理，完成后即可在这里查看完整内容。</p>
+        </div>
+        <div class="nm-foot">
+          <template v-if="viewTarget.status === 'done'">
+            <button class="btn btn-secondary btn-sm" @click="exportNote(viewTarget)"><AppIcon name="download" :size="13" /> 导出</button>
+            <button class="btn btn-primary btn-sm" @click="goQA(viewTarget)"><AppIcon name="chat" :size="13" /> 去追问</button>
+          </template>
+          <button class="btn btn-ghost btn-sm nm-foot-close" @click="viewTarget = null">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -264,6 +333,42 @@ async function retryNote(n: ClassNote) {
 
 .modal-sm { max-width: 440px; }
 .modal-sub { color: var(--slate); line-height: 1.7; }
+
+/* 查看纪要弹窗：宽幅、正文滚动、底部操作固定 */
+.note-modal { max-width: 760px; width: calc(100vw - 48px); max-height: 84vh; display: flex; flex-direction: column; padding: 0; }
+.nm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 20px 0; }
+.nm-tags { display: flex; align-items: center; gap: 8px; }
+.nm-close { border: none; background: transparent; color: var(--stone); padding: 6px; border-radius: var(--radius-sm); display: flex; cursor: pointer; }
+.nm-close:hover { background: var(--surface); color: var(--ink); }
+.nm-title { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; padding: 10px 20px 0; }
+.nm-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px 18px; }
+.nm-theme { font-size: 13.5px; line-height: 1.8; color: var(--ink); padding: 4px 0 6px; border-bottom: 1px solid var(--hairline-soft); }
+.nm-sec { padding: 12px 0 4px; border-bottom: 1px solid var(--hairline-soft); }
+.nm-sec:last-of-type { border-bottom: none; }
+.nm-sec-head { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; margin-bottom: 9px; color: var(--ink); }
+.nm-sec-head :deep(svg) { color: var(--primary); }
+.nm-list { list-style: none; display: flex; flex-direction: column; gap: 9px; }
+.nm-item { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; line-height: 1.65; }
+.nm-bullet { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); margin-top: 8px; flex-shrink: 0; }
+.nm-cite {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--steel); background: var(--surface);
+  border-radius: var(--radius-full); padding: 2.5px 9px;
+}
+.nm-def-term { font-size: 13.5px; font-weight: 700; color: var(--brand-purple-800); }
+.nm-def-detail { font-size: 13px; color: var(--slate); line-height: 1.65; margin-top: 3px; }
+.nm-item.emph { background: var(--tint-yellow-bold); border-radius: var(--radius-sm); padding: 7px 11px; font-size: 13px; }
+.emph-ico { color: var(--brand-brown); margin-top: 3px; flex-shrink: 0; }
+.nm-state { font-size: 13px; line-height: 1.7; color: var(--error); padding: 10px 0; }
+.nm-state.muted { color: var(--stone); }
+.nm-transcript { margin-top: 12px; font-size: 12.5px; }
+.nm-transcript summary { cursor: pointer; font-weight: 600; color: var(--slate); user-select: none; }
+.nm-transcript pre {
+  margin-top: 8px; padding: 12px; white-space: pre-wrap; word-break: break-word;
+  background: var(--surface); border-radius: var(--radius-md); color: var(--slate);
+  line-height: 1.7; max-height: 300px; overflow-y: auto;
+}
+.nm-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--hairline-soft); }
 
 @media (max-width: 720px) {
   .page { padding: 20px 16px 40px; }
