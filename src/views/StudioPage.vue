@@ -670,8 +670,12 @@ onBeforeUnmount(() => {
             @drop.prevent="onDrop"
           >
             <div class="upload-icon"><AppIcon name="upload" :size="24" /></div>
-            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text">点击上传</span></div>
+            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text">点击上传</span>（可多选 / 一次拖入多个）</div>
             <div v-else class="upload-text">已达 {{ MAX_FILES }} 个材料上限，可先移除部分再上传</div>
+            <!-- 多文件上传提示徽章：呼吸光晕突出「可批量」，空态与未满时展示 -->
+            <div v-if="inputFiles.length < MAX_FILES" class="multi-badge">
+              <AppIcon name="layers" :size="13" /> 支持一次添加多个材料，批量生成纪要（最多 {{ MAX_FILES }} 个）
+            </div>
             <div class="kind-hints">
               <span class="kind-hint"><AppIcon name="headphones" :size="13" /> 音频 mp3 / wav / m4a 等</span>
               <span class="kind-hint"><AppIcon name="image" :size="13" /> 图片 jpg / png / webp 等</span>
@@ -1010,6 +1014,18 @@ onBeforeUnmount(() => {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; color: var(--slate); background: var(--canvas);
   border: 1px solid var(--hairline); border-radius: var(--radius-full); padding: 4px 10px;
+}
+/* 多文件上传徽章：紫色胶囊 + 呼吸光晕，比格式提示更醒目（reduced-motion 下自动静止） */
+.multi-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--tint-lavender); color: var(--brand-purple-800);
+  font-size: 12.5px; font-weight: 600;
+  padding: 5px 12px; border-radius: var(--radius-full);
+  animation: badge-breathe 2.4s ease-in-out infinite;
+}
+@keyframes badge-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(123, 63, 242, 0.16); }
+  50% { box-shadow: 0 0 0 7px rgba(123, 63, 242, 0); }
 }
 
 /* 材料清单：横向滚动卡片条（最多 12 个，拖动滚动条查看） */

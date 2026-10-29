@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 问题反馈页：提交 Bug / 建议
- * 不区分反馈类型；截图仅支持图片，支持点击或拖拽上传；提交到后端（未登录默认联系邮箱为账号邮箱）
+ * 不区分反馈类型；截图仅支持图片，可一次上传多张（最多 6 张，缩略图横向滚动）；提交到后端（未登录默认联系邮箱为账号邮箱）
  */
 import { reactive, ref, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -15,45 +15,62 @@ const submitting = ref(false)
 const submitError = ref('')
 let submittedTimer: number | undefined
 
-// ---------- 截图上传（仅图片，点击选择或拖拽，本地预览 + 提交时随表单上传） ----------
+// ---------- 截图上传（仅图片，可一次多选 / 多拖，最多 6 张；本地预览 + 提交时随表单上传） ----------
+const MAX_SHOTS = 6
 const shotInput = ref<HTMLInputElement>()
-const shot = ref<{ name: string; url: string; file: File } | null>(null)
+const shots = ref<{ name: string; url: string; file: File }[]>([])
 const dragActive = ref(false)
 const shotError = ref('')
 
 function pickShot() {
   shotInput.value?.click()
 }
-function acceptShot(f: File) {
-  shotError.value = ''
-  if (!isSupportedImage(f.name)) {
-    shotError.value = '仅支持图片格式（jpg / jpeg / png / webp / gif）'
-    return
+/** 批量校验并加入截图：非图片 / 超 10MB / 超张数 / 重复的跳过并提示，不打断其余图片 */
+function acceptShots(list: FileList | File[]) {
+  const msgs: string[] = []
+  let skippedNonImage = false
+  for (const f of Array.from(list)) {
+    if (shots.value.length >= MAX_SHOTS) {
+      msgs.push(`一次最多上传 ${MAX_SHOTS} 张，多出的图片未添加`)
+      break
+    }
+    if (!isSupportedImage(f.name)) {
+      skippedNonImage = true
+      continue
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      msgs.push(`「${f.name}」超过 10MB，未添加`)
+      continue
+    }
+    if (shots.value.some((s) => s.name === f.name && s.file.size === f.size)) continue
+    shots.value.push({ name: f.name, url: URL.createObjectURL(f), file: f })
   }
-  if (f.size > 10 * 1024 * 1024) {
-    shotError.value = '图片大小不能超过 10MB'
-    return
-  }
-  clearShot()
-  shot.value = { name: f.name, url: URL.createObjectURL(f), file: f }
+  if (skippedNonImage) msgs.unshift('仅支持图片格式（jpg / jpeg / png / webp / gif），已跳过其他文件')
+  shotError.value = msgs.join('；')
 }
 function onShotChange(e: Event) {
   const input = e.target as HTMLInputElement
-  const f = input.files?.[0]
+  const files = Array.from(input.files ?? []) // 先拷贝：input.value 清空会连带清空活 FileList
   input.value = ''
-  if (f) acceptShot(f)
+  if (files.length) acceptShots(files)
 }
 function onDrop(e: DragEvent) {
   dragActive.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f) acceptShot(f)
+  const files = e.dataTransfer?.files
+  if (files?.length) acceptShots(files)
 }
-function clearShot() {
-  if (shot.value) URL.revokeObjectURL(shot.value.url)
-  shot.value = null
+function removeShot(i: number) {
+  const s = shots.value[i]
+  if (!s) return
+  URL.revokeObjectURL(s.url)
+  shots.value.splice(i, 1)
+}
+function clearShots() {
+  for (const s of shots.value) URL.revokeObjectURL(s.url)
+  shots.value = []
 }
 onBeforeUnmount(() => {
-  clearShot()
+  clearShots()
   if (submittedTimer) window.clearTimeout(submittedTimer)
 })
 
@@ -66,11 +83,11 @@ async function submit() {
   try {
     await feedbackApi.create(
       { title: form.title.trim(), content: form.desc.trim() },
-      shot.value ? [shot.value.file] : [],
+      shots.value.map((s) => s.file),
     )
     form.title = ''
     form.desc = ''
-    clearShot()
+    clearShots()
     submitted.value = true
     if (submittedTimer) window.clearTimeout(submittedTimer)
     submittedTimer = window.setTimeout(() => (submitted.value = false), 2600)
@@ -101,14 +118,19 @@ async function submit() {
         <textarea v-model="form.desc" class="textarea" rows="6" placeholder="发生了什么？期望的结果是什么？"></textarea>
       </div>
       <div class="field">
-        <label class="field-label">截图（可选）</label>
-        <!-- 点击选择或拖拽图片上传，仅接受图片文件 -->
+        <div class="shot-label-row">
+          <label class="field-label">截图（可选）</label>
+          <span v-if="shots.length" class="shot-count" :class="{ full: shots.length >= MAX_SHOTS }">
+            已选 {{ shots.length }} / {{ MAX_SHOTS }}
+          </span>
+        </div>
+        <!-- 点击选择或拖拽图片上传，仅接受图片文件；支持一次多选 / 多拖 -->
         <div
           class="shot-box"
-          :class="{ dragover: dragActive, filled: shot }"
+          :class="{ dragover: dragActive }"
           role="button"
           tabindex="0"
-          aria-label="添加截图：点击选择或拖拽图片到此处"
+          aria-label="添加截图：点击选择或拖拽图片到此处，可一次上传多张（最多 6 张）"
           @click="pickShot"
           @keydown.enter.prevent="pickShot"
           @keydown.space.prevent="pickShot"
@@ -116,22 +138,23 @@ async function submit() {
           @dragleave.prevent="dragActive = false"
           @drop.prevent="onDrop"
         >
-          <template v-if="shot">
-            <img :src="shot.url" class="shot-thumb" alt="截图预览" />
-            <span class="shot-name ellipsis">{{ shot.name }}</span>
-            <button class="shot-clear" type="button" aria-label="移除截图" @click.stop="clearShot">
-              <AppIcon name="x" :size="13" />
+          <AppIcon name="image" :size="24" />
+          <span class="shot-main">点击选择或拖拽图片到此处</span>
+          <span class="shot-multi">可一次上传多张（最多 {{ MAX_SHOTS }} 张）</span>
+          <span class="shot-sub">支持 jpg / jpeg / png / webp / gif，单张不超过 10MB</span>
+          <input ref="shotInput" type="file" hidden multiple :accept="UPLOAD_ACCEPT.image" @change="onShotChange" />
+        </div>
+        <!-- 已选截图缩略图条：图片多时横向滚动 -->
+        <div v-if="shots.length" class="shot-strip" role="list" aria-label="已选截图">
+          <div v-for="(s, i) in shots" :key="s.url" class="shot-item" role="listitem">
+            <img :src="s.url" class="shot-thumb" :alt="`截图 ${i + 1}`" :title="s.name" />
+            <button class="shot-clear" type="button" :aria-label="`移除截图 ${s.name}`" @click="removeShot(i)">
+              <AppIcon name="x" :size="12" />
             </button>
-          </template>
-          <template v-else>
-            <AppIcon name="image" :size="24" />
-            <span class="shot-main">点击选择或拖拽图片到此处</span>
-            <span class="shot-sub">支持 jpg / jpeg / png / webp / gif，不超过 10MB</span>
-          </template>
-          <input ref="shotInput" type="file" hidden :accept="UPLOAD_ACCEPT.image" @change="onShotChange" />
+          </div>
         </div>
         <p v-if="shotError" class="field-hint hint-err">{{ shotError }}</p>
-        <p v-else class="field-hint">仅支持图片，拖拽图片文件到上方框内即可上传</p>
+        <p v-else class="field-hint">把多张图片一起拖进上方框内即可批量上传，提交时随反馈一并发送</p>
       </div>
 
       <!-- 提交失败提示 -->
@@ -151,7 +174,7 @@ async function submit() {
 <style scoped>
 .page { padding: 28px 32px 40px; max-width: 880px; width: 100%; margin: 0 auto; }
 
-/* 截图上传框：空态为放大的拖放区（竖排居中），已选截图时压缩为横向小条 */
+/* 截图上传框：常驻放大拖放区（竖排居中），多选提示做成紫色胶囊徽章突出 */
 .shot-box {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   min-height: 136px; padding: 24px 16px;
@@ -162,16 +185,31 @@ async function submit() {
 .shot-box:hover, .shot-box:focus-visible { border-color: var(--primary); color: var(--primary); }
 .shot-box:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .shot-box.dragover { border-color: var(--primary); color: var(--primary); background: var(--tint-lavender); border-style: solid; }
-.shot-box.filled { flex-direction: row; min-height: 0; padding: 10px 14px; gap: 8px; text-align: left; }
+.shot-label-row { display: flex; align-items: center; gap: 10px; }
+.shot-count { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--steel); font-variant-numeric: tabular-nums; }
+.shot-count.full { color: var(--warning); }
 .shot-main { font-weight: 500; }
-.shot-sub { font-size: 12px; color: var(--stone); }
-.shot-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; }
-.shot-name { flex: 1; min-width: 0; color: var(--ink); }
-.shot-clear {
-  border: none; background: transparent; color: var(--stone);
-  padding: 5px; border-radius: var(--radius-sm); display: flex; cursor: pointer; flex-shrink: 0;
+.shot-multi {
+  background: var(--tint-lavender); color: var(--brand-purple-800);
+  font-size: 12px; font-weight: 600; line-height: 1.4;
+  padding: 3px 10px; border-radius: var(--radius-full);
 }
-.shot-clear:hover { background: var(--surface-soft); color: var(--error); }
+.shot-sub { font-size: 12px; color: var(--stone); }
+/* 已选截图缩略图条：图片多时横向滚动 */
+.shot-strip { display: flex; gap: 10px; overflow-x: auto; padding: 8px 2px 4px; }
+.shot-item { position: relative; flex-shrink: 0; }
+.shot-thumb {
+  width: 84px; height: 84px; object-fit: cover; display: block;
+  border: 1px solid var(--hairline); border-radius: var(--radius-md);
+}
+.shot-clear {
+  position: absolute; top: -6px; right: -6px;
+  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--hairline-strong); border-radius: 50%;
+  background: var(--canvas); color: var(--slate); cursor: pointer; padding: 0;
+  transition: all 0.15s ease;
+}
+.shot-clear:hover { color: var(--error); border-color: var(--error); }
 .field-hint.hint-err { color: #d92d20; }
 
 /* 提交失败提示 */
