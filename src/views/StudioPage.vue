@@ -406,24 +406,31 @@ function clearMainTimers() {
 function clearAllTimers() {
   clearMainTimers()
   if (extrasTimer) { window.clearInterval(extrasTimer); extrasTimer = null }
+  extrasPendingIds.clear()
+  extrasPending.value = 0
 }
 
-/** 后台轮询其余勾选材料的生成状态：done / failed 都同步进 store，全部收敛后停止 */
+/** 后台轮询生成中的材料：done / failed 都同步进 store，全部收敛后停止。
+ * 可重复调用追加材料（主材料轮询超时转入后台时复用），已启动的定时器不受影响 */
+const extrasPendingIds = new Set<string>()
 function pollExtras(list: ApiNote[]) {
+  for (const n of list) extrasPendingIds.add(String(n.id))
+  extrasPending.value = extrasPendingIds.size
+  if (extrasTimer) return // 已在轮询：追加跟踪即可，不重置计数
   extrasPollCount = 0
-  const pending = new Set(list.map((n) => n.id))
   extrasTimer = window.setInterval(() => {
     extrasPollCount++
-    if (extrasPollCount > 150 || !pending.size) { // 约 10 分钟放弃补拉（「我的纪要」页还有 10s 兜底轮询）
+    if (extrasPollCount > 450 || !extrasPendingIds.size) { // 约 30 分钟放弃补拉（「我的纪要」页还有 10s 兜底轮询）
       if (extrasTimer) { window.clearInterval(extrasTimer); extrasTimer = null }
+      extrasPendingIds.clear()
       extrasPending.value = 0
       return
     }
-    for (const id of [...pending]) {
-      void notesApi.detail(String(id)).then((n) => {
+    for (const id of [...extrasPendingIds]) {
+      void notesApi.detail(id).then((n) => {
         updateNote(String(n.id), noteFromApi(n))
-        if (n.status !== 'processing') pending.delete(n.id)
-        extrasPending.value = pending.size
+        if (n.status !== 'processing') extrasPendingIds.delete(String(n.id))
+        extrasPending.value = extrasPendingIds.size
       }).catch(() => { /* 网络抖动下一轮再拉 */ })
     }
   }, 4000)
@@ -627,10 +634,11 @@ function startGenerate() {
       pollCount = 0
       pollTimer = window.setInterval(async () => {
         pollCount++
-        if (pollCount > 150) { // 约 10 分钟仍未完成
-          clearMainTimers() // 后台材料的补拉不受影响，继续收敛
+        if (pollCount > 450) { // 约 30 分钟仍未完成（后端常驻 worker 继续跑，不再算失败）
+          clearMainTimers() // 主流程停止；材料转入后台补拉继续收敛（pollExtras 不受 clearMainTimers 影响）
           genState.value = 'stopped'
-          genError.value = '生成超时，请稍后在「我的纪要」查看状态或重新处理'
+          genError.value = '生成时间较长，已转入后台继续生成，完成后会自动出现在「我的纪要」，无需重新处理'
+          pollExtras([head]) // 主材料同样进入后台补拉：done / failed 都会同步进「我的纪要」
           return
         }
         try {
