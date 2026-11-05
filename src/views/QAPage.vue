@@ -115,16 +115,6 @@ const sessionGroups = computed(() => {
   return groups
 })
 
-// 徽标：关联课堂显示纪要追问次数，自由对话显示本轮提问数
-function badgeCount(s: QaSession): number {
-  if (s.noteId) {
-    const n = classNotes.value.find((x) => x.id === s.noteId)
-    if (n) return n.questions
-  }
-  const list = messageStore[s.id]
-  return list ? list.filter((m) => m.role === 'user').length : 0
-}
-
 // ---------- 会话管理：新增 / 置顶 / 重命名 / 删除 ----------
 function createSession() {
   const s: QaSession = { id: 'qa' + Date.now(), title: '新的对话' }
@@ -237,7 +227,8 @@ function toCitations(refs: ApiQaRecord['references'], noteTitle: string): Citati
       no: i + 1,
       kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
       mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
-      note: ext ? '网络检索' : noteTitle,
+      // 自由对话的跨纪要引用没有会话级标题，卡片名取引用自带的纪要标题
+      note: ext ? '网络检索' : (ref.label || noteTitle),
       snippet: cleanSnippet(ref.detail ?? ''),
       score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
       url: ref.url,
@@ -706,10 +697,6 @@ function askQuestion(text: string, images?: File[]) {
   askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined, onStreamStatus, images)
     .then((record) => {
       buf.record = record
-      if (record) {
-        const note = activeNote.value
-        if (note) note.questions++ // 会话角标即时 +1（下次拉取与后端计数对齐）
-      }
     })
     .catch(() => {
       if (!buf.error) buf.error = '网络异常，请稍后再试'
@@ -1104,8 +1091,6 @@ onDeactivated(() => {
               @blur="commitRename"
             />
             <span v-else class="ellipsis">{{ s.title }}</span>
-            <AppIcon v-if="s.pinned && editId !== s.id" name="pin" :size="12" class="pin-badge" />
-            <span v-if="editId !== s.id" class="qa-count" title="追问次数">{{ badgeCount(s) }}</span>
             <span v-if="editId !== s.id" class="item-actions">
               <button
                 class="item-act"
@@ -1147,7 +1132,6 @@ onDeactivated(() => {
       <div class="chat-head">
         <template v-if="activeSession">
           <span class="head-title ellipsis">{{ activeSession.title }}</span>
-          <span class="tag tag-purple">{{ activeNote ? activeNote.course : '自由追问' }}</span>
         </template>
         <span v-else class="head-title muted">选择左侧对话开始追问</span>
       </div>
@@ -1483,8 +1467,6 @@ onDeactivated(() => {
 .session-item.active { background: var(--canvas); color: var(--ink); font-weight: 500; box-shadow: 0 1px 2px rgba(15,15,15,0.06); }
 .session-item .ellipsis { flex: 1; min-width: 0; }
 .session-item.pinned:not(.active) { background: var(--tint-lavender); color: var(--brand-purple-800); }
-.pin-badge { color: var(--primary); flex-shrink: 0; }
-.session-item:hover .pin-badge { display: none; }
 .session-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 20px 0; }
 
 /* 会话悬浮操作：置顶 / 重命名 / 删除 */
@@ -1510,15 +1492,6 @@ onDeactivated(() => {
   background: var(--canvas); font-family: inherit; font-size: 13px; color: var(--ink);
   padding: 3px 7px; outline: none; box-shadow: 0 0 0 2px var(--tint-lavender);
 }
-
-/* 追问次数徽标：悬浮操作出现时让位隐藏，避免拥挤 */
-.qa-count {
-  flex-shrink: 0; min-width: 20px; height: 18px; padding: 0 5px;
-  border-radius: 9px; background: var(--hairline-soft); color: var(--steel);
-  font-size: 10.5px; font-weight: 600; line-height: 18px; text-align: center;
-}
-.session-item.active .qa-count { background: var(--tint-lavender); color: var(--primary); }
-.session-item:hover .qa-count { display: none; }
 
 .kb-notice {
   display: flex; align-items: center; gap: 7px; padding: 9px 10px;

@@ -137,8 +137,12 @@ export async function listAll<T>(path: string, params: Record<string, string> = 
   while (url) {
     const page = await request<Page<T>>(url)
     out.push(...page.results)
-    // next 是后端按请求 Host 拼的绝对地址，剥掉协议+域名只留路径，保证始终同源翻页
-    url = page.next ? page.next.replace(/^https?:\/\/[^/]+/, '') : ''
+    // next 是后端按请求 Host 拼的绝对地址：剥掉协议+域名只留路径保证始终同源翻页，
+    // 再剥掉路径开头的 /api 前缀（request 会再补一次 BASE）——否则第二页拼成
+    // /api/api/… 404，超过 50 条（翻页）的列表整段拉空，表现为问答历史点开是空白页
+    url = page.next
+      ? page.next.replace(/^https?:\/\/[^/]+/, '').replace(new RegExp(`^${BASE}(?=/)`), '')
+      : ''
   }
   return out
 }
