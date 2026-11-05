@@ -118,8 +118,8 @@ export interface ApiQaRecord {
   user_name: string
   question: string
   answer: string
-  /** 引用来源：kind=kb 知识库片段（time 带录音时间戳）/ external 外部检索（带 url） */
-  references: { label: string; time: string; detail: string; kind?: 'kb' | 'external'; url?: string }[]
+  /** 引用来源：kind=kb 知识库片段（time 带录音时间戳）/ external 外部检索（带 url）/ doc 上传文档 */
+  references: { label: string; time: string; detail: string; kind?: 'kb' | 'external' | 'doc'; url?: string }[]
   /** RAG 生成的追问建议（回答下方可点击继续问） */
   followups: string[]
   liked: boolean
@@ -183,23 +183,26 @@ export async function streamAsk(
   sessionRef?: string,
   onStatus?: (stage: string, round?: number) => void,
   images?: File[],
+  docs?: File[],
+  signal?: AbortSignal,
 ): Promise<ApiQaRecord | null> {
   let res: Response
   try {
-    // 带图片附件时走 multipart（后端 /qa/ask/stream/ 支持 images[] 视觉问答），纯文本仍走 JSON
+    // 带图片附件时走 multipart（后端 /qa/ask/stream/ 支持 images[] 视觉问答），纯文本仍走 JSON；
+    // 文档附件（documents[]）由后端解析文本后围绕文档作答，与图片互斥由后端校验
     const headers: Record<string, string> = {
       'ngrok-skip-browser-warning': '1',
       Authorization: `Bearer ${getToken()}`,
     }
     let body: BodyInit
-    if (images?.length) {
+    if (images?.length || docs?.length) {
       const fd = buildForm(
         {
           question,
           ...(noteId ? { note_id: String(Number(noteId)) } : {}),
           ...(sessionRef ? { session_ref: sessionRef } : {}),
         },
-        { images },
+        { ...(images?.length ? { images } : {}), ...(docs?.length ? { documents: docs } : {}) },
       )
       body = fd
     } else {
@@ -210,8 +213,9 @@ export async function streamAsk(
         ...(sessionRef ? { session_ref: sessionRef } : {}),
       })
     }
-    res = await fetch(`${BASE}/qa/ask/stream/`, { method: 'POST', headers, body })
-  } catch {
+    res = await fetch(`${BASE}/qa/ask/stream/`, { method: 'POST', headers, body, signal })
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') throw err // 主动停止：调用方按「已停止」收尾
     buf.error = '网络异常，请稍后再试'
     return null
   }

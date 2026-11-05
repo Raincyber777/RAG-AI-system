@@ -143,7 +143,7 @@ export interface Session {
 
 export interface Citation {
   no: number
-  kind: 'audio' | 'image' | 'kb' | 'external' // 录音时间戳 / 图片来源 / 知识库片段 / 外部检索
+  kind: 'audio' | 'image' | 'kb' | 'external' | 'doc' // 录音时间戳 / 图片来源 / 知识库片段 / 外部检索 / 上传文档
   mark: string // 「03:24」或「PPT 第2页」「板书 图1」或外部来源标题
   note: string // 所属课堂纪要（外部来源为「网络检索」）
   snippet: string

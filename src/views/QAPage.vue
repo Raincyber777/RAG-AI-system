@@ -4,7 +4,8 @@
  * - 左侧：对话列表（新增 / 置顶 / 重命名 / 删除，可关联课堂）+ 搜索 + 常显滚动条（折叠状态持久化）
  * - 右侧：聊天窗口（流式回答 / 录音时间戳与图片来源引用 / 语音输入 / 附件上传）
  * - 提问记录导航：千问式右侧悬浮面板，悬停展开、点击定位，固定在滚动条左侧不遮挡
- * 回答为前端演示，接入真实模型后仅需替换 runStages / streamAnswer 中的回调
+ * 回答为前端演示，接入真实模型后仅需替换 runStages / startStream 中的回调；
+ * 流式任务按会话登记（askTasks）：切换对话不打断后台回答，答完落在原会话
  */
 import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount, onDeactivated } from 'vue'
 
@@ -119,8 +120,7 @@ const sessionGroups = computed(() => {
 function createSession() {
   const s: QaSession = { id: 'qa' + Date.now(), title: '新的对话' }
   qaSessions.value.unshift(s)
-  if (isTyping.value || isStreaming.value) stopGenerating()
-  activeSessionId.value = s.id
+  activeSessionId.value = s.id // 不打断其他会话还在后台进行的回答
   messagesFor(s.id)
 }
 
@@ -163,8 +163,9 @@ function removeSession(s: QaSession) {
   if (idx !== -1) qaSessions.value.splice(idx, 1)
   delete messageStore[s.id]
   loadedSessions.delete(s.id)
+  const task = askTasks.get(s.id)
+  if (task) stopTask(task) // 被删会话的回答没有存在意义：断开并清场
   if (activeSessionId.value === s.id) {
-    if (isTyping.value || isStreaming.value) stopGenerating()
     const first = qaSessions.value[0]
     if (first) {
       activeSessionId.value = first.id
@@ -223,12 +224,13 @@ function cleanSnippet(raw: string) {
 function toCitations(refs: ApiQaRecord['references'], noteTitle: string): Citation[] {
   return (Array.isArray(refs) ? refs : []).map((ref, i) => {
     const ext = ref.kind === 'external'
+    const doc = ref.kind === 'doc'
     return {
       no: i + 1,
-      kind: ext ? 'external' : ref.time ? 'audio' : 'kb',
-      mark: ext ? (ref.label || '外部来源') : ref.time || ref.label,
+      kind: ext ? 'external' : doc ? 'doc' : ref.time ? 'audio' : 'kb',
+      mark: ext ? (ref.label || '外部来源') : doc ? (ref.label || '上传文档') : ref.time || ref.label,
       // 自由对话的跨纪要引用没有会话级标题，卡片名取引用自带的纪要标题
-      note: ext ? '网络检索' : (ref.label || noteTitle),
+      note: ext ? '网络检索' : doc ? '上传文档' : (ref.label || noteTitle),
       snippet: cleanSnippet(ref.detail ?? ''),
       score: ext ? 0 : Math.max(0.6, 0.92 - i * 0.08),
       url: ref.url,
@@ -267,7 +269,7 @@ async function loadHistory(id: string) {
 
 function switchSession(id: string) {
   if (id === activeSessionId.value) return
-  if (isTyping.value || isStreaming.value) stopGenerating()
+  // 不打断当前会话的流式回答：任务绑在会话上后台继续，切回来接着显示
   activeSessionId.value = id
   messagesFor(id)
   void loadHistory(id)
@@ -277,11 +279,8 @@ function switchSession(id: string) {
 // ---------- AI 状态机 ----------
 const input = ref('')
 const composerInput = ref<HTMLTextAreaElement | null>(null)
-const isTyping = ref(false) // 前置阶段
-const isStreaming = ref(false) // 逐字输出
 
 type AiStage = 'searching' | 'thinking' | 'composing' | 'validating' | 'refining'
-const aiStage = ref<AiStage | null>(null)
 const STAGE_TEXT: Record<AiStage, string> = {
   searching: '正在检索课堂知识库',
   thinking: '正在思考',
@@ -296,76 +295,102 @@ const STAGE_ICON: Record<AiStage, string> = {
   validating: 'shield',
   refining: 'refresh',
 }
-const stageTimers: number[] = []
-let streamTimer: number | null = null
-let streamLaunch: number | null = null // streamAnswer 启动定时器单列：后端 status 帧清假阶段时不能误杀它
 
-function clearStageTimers() {
-  while (stageTimers.length) {
-    const t = stageTimers.pop()
-    if (t !== undefined) window.clearTimeout(t)
-  }
+/** 每个会话独立的流式任务：任务绑定会话而非页面全局，切换对话不打断后台回答——
+ * 切走后照常答完入库，气泡落在原会话，切回来继续走字（2026-11-05 用户反馈） */
+interface AskTask {
+  sid: string
+  phase: 'typing' | 'streaming' // typing=前置阶段动画 streaming=逐字输出
+  buf: AskBuf
+  promise: Promise<ApiQaRecord | null> | null
+  abort: AbortController
+  msg: ChatMessage | null // 进入 streaming 时创建的正式气泡
+  stage: AiStage | null
+  stageTimers: number[]
+  streamLaunch: number | null
+  stageCycle: number | null
+  backendStage: boolean
+  refineRound: number
+  reveal: number
+  lastMoveAt: number
+  timer: number | null
+}
+const askTasks = reactive(new Map<string, AskTask>())
+const activeTask = computed<AskTask | null>(() => askTasks.get(activeSessionId.value) ?? null)
+const isTyping = computed(() => activeTask.value?.phase === 'typing')
+const isStreaming = computed(() => activeTask.value?.phase === 'streaming')
+// 模板引用的阶段状态一律取自当前会话的任务：后台任务的气泡由各自的追赶定时器推进，
+// 不随切换丢失；切回会话时模板重新读到任务状态即可续显
+const viewStage = computed<AiStage | null>(() => activeTask.value?.stage ?? null)
+const viewStreamingId = computed(() => activeTask.value?.msg?.id ?? '')
+const viewRefineRound = computed(() => activeTask.value?.refineRound ?? 0)
+
+// 阶段文案：修正轮带轮次（如「正在修正回答（第 2 轮）」），其余直接取表
+function stageText(stage: AiStage) {
+  return stage === 'refining' && viewRefineRound.value > 1
+    ? `${STAGE_TEXT[stage]}（第 ${viewRefineRound.value} 轮）`
+    : STAGE_TEXT[stage]
 }
 
-function runStages() {
-  aiStage.value = 'searching'
-  stageTimers.push(window.setTimeout(() => { aiStage.value = 'thinking' }, 1100))
-  stageTimers.push(window.setTimeout(() => { aiStage.value = 'composing' }, 2400))
-  streamLaunch = window.setTimeout(() => { streamAnswer() }, 3300)
+function clearTaskTimers(t: AskTask) {
+  while (t.stageTimers.length) {
+    const id = t.stageTimers.pop()
+    if (id !== undefined) window.clearTimeout(id)
+  }
+  if (t.streamLaunch !== null) { window.clearTimeout(t.streamLaunch); t.streamLaunch = null }
+  if (t.stageCycle !== null) { window.clearInterval(t.stageCycle); t.stageCycle = null }
+  if (t.timer !== null) { window.clearInterval(t.timer); t.timer = null }
+}
+
+function runStages(t: AskTask) {
+  t.stage = 'searching'
+  t.stageTimers.push(window.setTimeout(() => { t.stage = 'thinking' }, 1100))
+  t.stageTimers.push(window.setTimeout(() => { t.stage = 'composing' }, 2400))
+  t.streamLaunch = window.setTimeout(() => { startStream(t) }, 3300)
 }
 
 // 流式等待期状态：正式消息气泡已创建但首字未到（检索 / 外部搜索耗时不定），
 // 必须持续显示阶段文案，绝不能渲染成无字空框；阶段在思考 / 组织间轮换表示活跃
-const streamStage = ref<AiStage | null>(null)
-const streamingId = ref('') // 正在流式输出的消息 id：校验进度小字只挂在它身上
-let stageCycle: number | null = null
-
-function stopStageCycle() {
-  if (stageCycle !== null) { window.clearInterval(stageCycle); stageCycle = null }
+function stopTaskCycle(t: AskTask) {
+  if (t.stageCycle !== null) { window.clearInterval(t.stageCycle); t.stageCycle = null }
 }
 
-function startStageCycle() {
-  stopStageCycle()
-  stageCycle = window.setInterval(() => {
-    streamStage.value = streamStage.value === 'thinking' ? 'composing' : 'thinking'
+function startStageCycle(t: AskTask) {
+  stopTaskCycle(t)
+  t.stageCycle = window.setInterval(() => {
+    t.stage = t.stage === 'thinking' ? 'composing' : 'thinking'
   }, 3500)
 }
 
 // 后端 status 帧驱动真实阶段（agent 流水线：路由 / 多轮生成 / 校验 / 修正）。
-// 收到帧即停掉本地假轮换并清掉假阶段定时器，此后阶段完全由后端推进；
+// 收到帧即停掉本地假轮换并清掉假阶段定时器（streamLaunch 不能动），此后阶段完全由后端推进；
 // 通用问答（非 agent 链路）没有 status 帧，维持本地轮换不变。
-const backendStage = ref(false)
-const refineRound = ref(0) // 修正轮计数：阶段文案带「第 N 轮」，让多轮校验可感知
-function onStreamStatus(stage: string, round?: number) {
-  backendStage.value = true
-  clearStageTimers()
-  stopStageCycle()
-  if ((round ?? 0) > refineRound.value) refineRound.value = round!
-  const mapped: AiStage = stage === 'validating' ? 'validating'
+function onTaskStatus(t: AskTask, stage: string, round?: number) {
+  t.backendStage = true
+  while (t.stageTimers.length) {
+    const id = t.stageTimers.pop()
+    if (id !== undefined) window.clearTimeout(id)
+  }
+  stopTaskCycle(t)
+  if ((round ?? 0) > t.refineRound) t.refineRound = round!
+  t.stage = stage === 'validating' ? 'validating'
     : stage === 'retrieving' ? 'searching'
     : stage === 'generating' ? 'composing'
     : (round ?? 1) > 1 ? 'refining' : 'thinking'
-  aiStage.value = mapped
-  streamStage.value = mapped
 }
 
-// 阶段文案：修正轮带轮次（如「正在修正回答（第 2 轮）」），其余直接取表
-function stageText(stage: AiStage) {
-  return stage === 'refining' && refineRound.value > 1
-    ? `${STAGE_TEXT[stage]}（第 ${refineRound.value} 轮）`
-    : STAGE_TEXT[stage]
+/** 终止某个会话的生成：真正断开 SSE——后端断流兜底会把已生成内容收尾入库，
+ * 气泡保留已生成的部分并注明已停止（刷新后从服务端读回部分回答） */
+function stopTask(t: AskTask) {
+  clearTaskTimers(t)
+  t.abort.abort()
+  if (askTasks.get(t.sid) === t) askTasks.delete(t.sid)
+  if (t.msg) t.msg.content = (t.msg.content || '') + (t.msg.content ? '\n\n（已停止生成）' : '已停止生成')
 }
 
 function stopGenerating() {
-  clearStageTimers()
-  stopStageCycle()
-  if (streamTimer) { window.clearInterval(streamTimer); streamTimer = null }
-  if (streamLaunch) { window.clearTimeout(streamLaunch); streamLaunch = null }
-  isTyping.value = false
-  isStreaming.value = false
-  aiStage.value = null
-  streamStage.value = null
-  streamingId.value = ''
+  const t = activeTask.value
+  if (t) stopTask(t)
 }
 
 // 把当前对话关联课堂的纪要标题代入演示回答（更贴近真实观感）
@@ -446,7 +471,7 @@ interface AttachItem {
   kind: AttachKind
   size: string
   preview?: string
-  file?: File // 图片附件的原始文件，提问时随 multipart 上传（后端仅支持图片视觉问答）
+  file?: File // 附件原始文件，提问时随 multipart 上传（图片→视觉问答 / 文档→解析文本作答）
 }
 const MAX_ATTACH = 8
 
@@ -473,13 +498,13 @@ function closeAttachMenu() {
   attachMenuOpen.value = false
 }
 
-function pickAttach() {
+function pickAttach(kind: 'image' | 'doc') {
   if (attachments.value.length >= MAX_ATTACH) {
     flashAttachTip(`最多同时上传 ${MAX_ATTACH} 个文件，请先移除部分附件`)
     closeAttachMenu()
     return
   }
-  attachAccept.value = UPLOAD_ACCEPT.image   // 问答仅支持图片视觉问答，文件选择器先按图片过滤
+  attachAccept.value = UPLOAD_ACCEPT[kind]
   closeAttachMenu()
   nextTick(() => attachInput.value?.click())
 }
@@ -495,7 +520,7 @@ function handleAttachFiles(list: FileList | null | undefined) {
   let dupCount = 0
   let badFormat = ''
   let tooBig = ''
-  let nonImage = ''
+  let blocked = ''
   for (const f of Array.from(list)) {
     // 最多同时添加 MAX_ATTACH 个附件（相同或不同格式合计），超出部分给出提示
     if (attachments.value.length >= MAX_ATTACH) {
@@ -507,10 +532,11 @@ function handleAttachFiles(list: FileList | null | undefined) {
       badFormat = badFormat ? `${badFormat}、${f.name}` : f.name
       continue
     }
-    if (kind !== 'image') {
-      // 后端问答只支持图片视觉问答：音视频 / 文档在这里就拦下并说明去向，
-      // 而不是等发送后才吃 400（此前视频附件只会在气泡里空转）
-      nonImage = nonImage ? `${nonImage}、${f.name}` : f.name
+    // 问答附件支持图片（视觉问答）与文档（后端解析文本作答）；
+    // 音视频 / 压缩包在这里就拦下并说明去向，而不是等发送后才吃 400
+    const isZip = f.name.toLowerCase().endsWith('.zip')
+    if (kind === 'audio' || kind === 'video' || isZip) {
+      blocked = blocked ? `${blocked}、${f.name}` : f.name
       continue
     }
     if (f.size > UPLOAD_MAX_MB[kind] * 1024 * 1024) {
@@ -531,7 +557,7 @@ function handleAttachFiles(list: FileList | null | undefined) {
     })
     accepted++
   }
-  if (nonImage) flashAttachTip(`智能问答目前仅支持图片识别：${nonImage}；音视频 / 文档请到「课堂纪要」上传生成纪要后提问`)
+  if (blocked) flashAttachTip(`智能问答附件仅支持图片与文档（PDF / Word / PPT / 文本）：${blocked}；音视频 / 压缩包请到「课堂纪要」上传后再提问`)
   else if (badFormat) flashAttachTip(`暂不支持此格式文件：${badFormat}`)
   else if (tooBig) flashAttachTip(`文件过大：${tooBig}，请压缩后再试`)
   else if (accepted === 0 && attachments.value.length < MAX_ATTACH) {
@@ -603,7 +629,8 @@ function revokeAllAttachPreviews() {
 }
 
 // ---------- 发送 ----------
-/** SSE 流式问答缓冲：后端增量实时写入 text，streamAnswer 以打字速度追赶展示 */
+/** SSE 流式问答缓冲：后端增量实时写入 text，startStream 以打字速度追赶展示。
+ * 缓冲随 AskTask 挂在会话上（askTasks），不再用页面级单例——切会话不打断回答 */
 interface AskBuf {
   text: string
   error: string | null
@@ -611,8 +638,6 @@ interface AskBuf {
   blocked: string | null
   record: ApiQaRecord | null
 }
-let askBuf: AskBuf | null = null
-let askPromise: Promise<void> | null = null
 
 // ---------- 反馈埋点 / 安全提醒 ----------
 /** 安全提醒弹窗（违规拦截 / 政治引导 / 健康禁忌） */
@@ -669,118 +694,123 @@ function send() {
   // 首条提问自动作为会话标题（手动重命名过的不覆盖），刷新后恢复列表时也好辨认
   const cur = qaSessions.value.find((x) => x.id === activeSessionId.value)
   if (cur && cur.title === '新的对话') cur.title = text.slice(0, 18)
-  // 图片附件随提问走 multipart 上传（后端仅支持图片视觉问答）
-  const imgFiles = attachments.value
-    .map((a) => a.file)
-    .filter((f): f is File => f instanceof File)
+  // 附件随提问走 multipart 上传：图片 → 视觉问答，文档 → 后端解析文本作答
+  const fileOf = (a: AttachItem) => (a.file instanceof File ? a.file : null)
+  const imgFiles = attachments.value.filter((a) => a.kind === 'image').map(fileOf).filter((f): f is File => !!f)
+  const docFiles = attachments.value.filter((a) => a.kind !== 'image').map(fileOf).filter((f): f is File => !!f)
   // 附件随消息发出（预览地址由消息继续持有展示），输入区清空
   attachments.value = []
   input.value = ''
   scrollToBottom()
-  askQuestion(full, imgFiles)
+  askQuestion(full, imgFiles, docFiles)
 }
 
-/** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显 */
-function askQuestion(text: string, images?: File[]) {
-  isTyping.value = true
-  backendStage.value = false // 新提问重置：阶段先走本地轮换，收到后端 status 帧再接管
-  refineRound.value = 0
-  runStages()
-  if (isGuest.value) {
-    askPromise = null // 游客态回退到本地演示回答
-    askBuf = null
-    return
-  }
-  const buf: AskBuf = { text: '', error: null, blocked: null, record: null }
-  askBuf = buf
+/** 提问：阶段动画进行的同时发起 SSE 流式请求，增量先落缓冲，动画结束后边收边显。
+ * 任务按会话登记（askTasks）：切换对话不打断，回答在原会话照常走完 */
+function askQuestion(text: string, images?: File[], docs?: File[]) {
+  const sid = activeSessionId.value || ''
+  // 任务本身建成 reactive：askTasks 存的是代理，raw 对象的属性变更不会触发
+  // isTyping/isStreaming 等 computed，且 get() 取回的对象必须与闭包里的 t 同一（身份判定删任务）
+  const t = reactive({
+    sid,
+    phase: 'typing',
+    buf: { text: '', error: null, blocked: null, record: null },
+    promise: null,
+    abort: new AbortController(),
+    msg: null,
+    stage: null,
+    stageTimers: [],
+    streamLaunch: null,
+    stageCycle: null,
+    backendStage: false, // 阶段先走本地轮换，收到后端 status 帧再接管
+    refineRound: 0,
+    reveal: 0,
+    lastMoveAt: Date.now(),
+    timer: null,
+  }) as AskTask
+  askTasks.set(sid, t)
+  runStages(t)
+  if (isGuest.value) return // 游客态：startStream 走本地演示回答
   // 会话标识随提问入库（session_ref）：刷新后按会话拉回历史
-  askPromise = streamAsk(activeSession.value?.noteId ?? null, text, buf, activeSessionId.value || undefined, onStreamStatus, images)
+  t.promise = streamAsk(activeSession.value?.noteId ?? null, text, t.buf, sid || undefined,
+      (stage, round) => onTaskStatus(t, stage, round), images, docs, t.abort.signal)
     .then((record) => {
-      buf.record = record
+      t.buf.record = record
+      return record
     })
-    .catch(() => {
-      if (!buf.error) buf.error = '网络异常，请稍后再试'
+    .catch((err: unknown): ApiQaRecord | null => {
+      // 主动停止（AbortError）时气泡已在 stopGenerating 收尾，这里只兜网络错误
+      if ((err as Error)?.name !== 'AbortError' && !t.buf.error) t.buf.error = '网络异常，请稍后再试'
+      return null
     })
 }
 
-async function streamAnswer() {
-  isStreaming.value = true
-  isTyping.value = false // 前置气泡切到正式消息气泡，等待期状态由 streamStage 接管
-  streamStage.value = aiStage.value || 'composing'
-  if (!backendStage.value) startStageCycle() // 后端 status 帧已接管时不做本地假轮换
+function startStream(t: AskTask) {
+  t.phase = 'streaming'
+  t.stage = t.stage || 'composing'
+  if (!t.backendStage) startStageCycle(t) // 后端 status 帧已接管时不做本地假轮换
   const msg: ChatMessage = reactive({
     id: 'a' + Date.now(),
     role: 'assistant',
     content: '',
     time: now(),
   })
-  if (activeSessionId.value) messagesFor(activeSessionId.value).push(msg)
-  streamingId.value = msg.id
-  scrollToBottom()
+  t.msg = msg
+  messagesFor(t.sid).push(msg)
+  if (t.sid === activeSessionId.value) scrollToBottom()
 
-  const pending = askPromise
-  const buf = askBuf
-  askPromise = null
-  askBuf = null
+  const pending = t.promise
+  const buf = t.buf
 
   // 游客 / 请求未发出：本地演示回答按原逐字节奏输出
   if (!pending || !buf) {
     const reply = buildReply()
     msg.citations = reply.citations
     let i = 0
-    const timer = window.setInterval(() => {
+    t.timer = window.setInterval(() => {
       i += 2 + Math.floor(Math.random() * 3)
       msg.content = reply.content.slice(0, i)
       if (i >= reply.content.length) {
-        window.clearInterval(timer)
-        streamTimer = null
-        streamStage.value = null
-        stopStageCycle()
-        streamingId.value = ''
-        isStreaming.value = false
-        scrollToBottom()
+        if (t.timer !== null) { window.clearInterval(t.timer); t.timer = null }
+        t.stage = null
+        stopTaskCycle(t)
+        if (askTasks.get(t.sid) === t) askTasks.delete(t.sid)
       }
     }, 30)
-    streamTimer = timer
     return
   }
 
   // 真流式：展示进度追赶 SSE 缓冲；流结束后落引用 / 追问 / 点赞态
-  let reveal = 0
   let settled = false
-  let lastMoveAt = Date.now()
   // resolve / reject 都算收尾：断流时 askQuestion 的 catch 已写入 buf.error；
   // 若只监听 then，流中途异常会让 settled 永不成立 → 停止按钮永久卡住无法继续提问
   void pending.finally(() => {
     settled = true
   })
-  const timer = window.setInterval(() => {
-    if (buf.text.length < reveal) {
+  t.timer = window.setInterval(() => {
+    if (buf.text.length < t.reveal) {
       // agent 修正轮：后端 replace 清空缓冲重写。播放位必须同步回退，否则旧草稿
       // 冻结在屏上、新答案永远追不上，看起来就是「答完却卡住」
-      reveal = buf.text.length
-      msg.content = buf.text.slice(0, reveal)
-      lastMoveAt = Date.now()
+      t.reveal = buf.text.length
+      msg.content = buf.text.slice(0, t.reveal)
+      t.lastMoveAt = Date.now()
     }
-    if (reveal < buf.text.length) {
-      reveal = Math.min(buf.text.length, reveal + 2 + Math.floor(Math.random() * 3))
-      msg.content = buf.text.slice(0, reveal)
-      lastMoveAt = Date.now()
-      scrollToBottom()
+    if (t.reveal < buf.text.length) {
+      t.reveal = Math.min(buf.text.length, t.reveal + 2 + Math.floor(Math.random() * 3))
+      msg.content = buf.text.slice(0, t.reveal)
+      t.lastMoveAt = Date.now()
+      if (t.sid === activeSessionId.value) scrollToBottom()
       return
     }
     if (!settled) {
       // 流迟迟不结束（连接黑洞 / 服务端无响应）：90 秒无任何增长按超时收尾
-      if (Date.now() - lastMoveAt < 90_000) return
+      if (Date.now() - t.lastMoveAt < 90_000) return
       buf.error = buf.error || '回答超时，请检查网络后重试'
       settled = true
     }
     try {
-      window.clearInterval(timer)
-      streamTimer = null
-      streamStage.value = null
-      stopStageCycle()
-      streamingId.value = ''
+      clearTaskTimers(t)
+      t.stage = null
       if (buf.error) {
         msg.content = `回答生成失败：${buf.error}`
       } else {
@@ -804,12 +834,11 @@ async function streamAnswer() {
         }
       }
     } finally {
-      // 无论收尾过程是否抛错都必须复位流式状态，否则发送键永远停留在停止态
-      isStreaming.value = false
-      scrollToBottom()
+      // 无论收尾过程是否抛错都必须移除任务，否则发送键永远停留在停止态
+      if (askTasks.get(t.sid) === t) askTasks.delete(t.sid)
+      if (t.sid === activeSessionId.value) scrollToBottom()
     }
   }, 30)
-  streamTimer = timer
 }
 
 function regenerate(msg: ChatMessage) {
@@ -970,7 +999,7 @@ function segLevel(score: number) {
 function citeIcon(c: Citation) {
   if (c.kind === 'audio') return 'headphones'
   if (c.kind === 'external') return 'globe'
-  if (c.kind === 'kb') return 'file'
+  if (c.kind === 'kb' || c.kind === 'doc') return 'file'
   return 'image'
 }
 function citeMarkText(c: Citation) {
@@ -1037,8 +1066,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  clearStageTimers()
-  if (streamTimer) window.clearInterval(streamTimer)
+  for (const t of askTasks.values()) {
+    clearTaskTimers(t)
+    t.abort.abort() // 组件销毁（登出等）：后台回答随之终止，后端断流兜底保留部分回答
+  }
+  askTasks.clear()
   if (flashTimer) window.clearTimeout(flashTimer)
   if (attachTipTimer) window.clearTimeout(attachTipTimer)
   if (healthTipTimer) window.clearTimeout(healthTipTimer)
@@ -1188,21 +1220,21 @@ onDeactivated(() => {
             <div v-else class="row-ai fade-in" :data-mid="msg.id">
               <div class="ai-body">
                 <!-- 流式等待期（检索 / 外部搜索中，首字未到）：显示阶段文案，绝不渲染无字空框 -->
-                <div v-if="!msg.content && streamStage" class="ai-bubble typing">
+                <div v-if="!msg.content && viewStage" class="ai-bubble typing">
                   <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
                   <Transition name="stage" mode="out-in">
-                    <span :key="streamStage" class="typing-stage">
-                      <AppIcon :name="STAGE_ICON[streamStage]" :size="13" />
-                      {{ stageText(streamStage) }}…
+                    <span :key="viewStage" class="typing-stage">
+                      <AppIcon :name="STAGE_ICON[viewStage]" :size="13" />
+                      {{ stageText(viewStage) }}…
                     </span>
                   </Transition>
                 </div>
                 <div v-else class="ai-bubble" v-html="renderAnswer(msg.content)"></div>
 
                 <!-- 校验 / 修正进度：正文已上屏但流水线仍在跑，小字提示避免「像卡住」 -->
-                <div v-if="msg.content && (streamStage === 'validating' || streamStage === 'refining') && msg.id === streamingId" class="stream-chip">
-                  <AppIcon :name="STAGE_ICON[streamStage]" :size="12" />
-                  {{ stageText(streamStage) }}…
+                <div v-if="msg.content && (viewStage === 'validating' || viewStage === 'refining') && msg.id === viewStreamingId" class="stream-chip">
+                  <AppIcon :name="STAGE_ICON[viewStage]" :size="12" />
+                  {{ stageText(viewStage) }}…
                 </div>
 
                 <!-- 引用溯源：录音时间戳 / 图片来源 -->
@@ -1259,13 +1291,13 @@ onDeactivated(() => {
           </template>
 
           <!-- AI 处理状态 -->
-          <div v-if="isTyping && aiStage" class="row-ai fade-in">
+          <div v-if="isTyping && viewStage" class="row-ai fade-in">
             <div class="ai-bubble typing">
               <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
               <Transition name="stage" mode="out-in">
-                <span :key="aiStage" class="typing-stage">
-                  <AppIcon :name="STAGE_ICON[aiStage]" :size="13" />
-                  {{ stageText(aiStage) }}…
+                <span :key="viewStage" class="typing-stage">
+                  <AppIcon :name="STAGE_ICON[viewStage]" :size="13" />
+                  {{ stageText(viewStage) }}…
                 </span>
               </Transition>
             </div>
@@ -1325,11 +1357,18 @@ onDeactivated(() => {
             </button>
             <Transition name="drop">
               <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="上传附件">
-                <button type="button" class="attach-opt" role="menuitem" @click="pickAttach()">
-                  <span class="ao-ico tint-peach"><AppIcon name="file" :size="14" /></span>
+                <button type="button" class="attach-opt" role="menuitem" @click="pickAttach('image')">
+                  <span class="ao-ico tint-mint"><AppIcon name="image" :size="14" /></span>
                   <span class="ao-text">
                     <b>上传图片</b>
                     <i>识别图片内容（板书 / 讲义截图等）</i>
+                  </span>
+                </button>
+                <button type="button" class="attach-opt" role="menuitem" @click="pickAttach('doc')">
+                  <span class="ao-ico tint-peach"><AppIcon name="file" :size="14" /></span>
+                  <span class="ao-text">
+                    <b>上传文档</b>
+                    <i>PDF / Word / PPT / 文本，AI 直接阅读作答</i>
                   </span>
                 </button>
               </div>
@@ -1622,6 +1661,7 @@ onDeactivated(() => {
 .cite-kind.audio { background: var(--tint-sky); color: var(--link-blue); }
 .cite-kind.image { background: var(--tint-mint); color: var(--brand-green); }
 .cite-kind.kb { background: var(--tint-peach); color: var(--brand-orange); }
+.cite-kind.doc { background: var(--tint-yellow); color: var(--brand-orange); }
 .cite-kind.external { background: var(--tint-lavender); color: var(--brand-purple-800); }
 .cite-link {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; margin-top: auto;
