@@ -872,7 +872,15 @@ onBeforeUnmount(() => {
                   <span v-else class="file-badge" :class="KIND_META[f.kind].tint">
                     <AppIcon :name="KIND_META[f.kind].icon" :size="15" />
                   </span>
-                  <button class="icon-btn" aria-label="移除该材料" @click.stop="removeFile(f.id)"><AppIcon name="x" :size="14" /></button>
+                  <div class="fi-actions">
+                    <!-- 选中徽标：弹性弹出，点选哪份一眼可见 -->
+                    <Transition name="chip-pop">
+                      <span v-if="selectedFile?.id === f.id" class="fi-chip" aria-hidden="true">
+                        <AppIcon name="check" :size="11" />
+                      </span>
+                    </Transition>
+                    <button class="icon-btn" aria-label="移除该材料" @click.stop="removeFile(f.id)"><AppIcon name="x" :size="14" /></button>
+                  </div>
                 </div>
                 <div class="file-name ellipsis" :title="f.name">{{ f.name }}</div>
                 <div class="file-meta">{{ KIND_META[f.kind].label }} · {{ f.size }}</div>
@@ -1283,8 +1291,72 @@ onBeforeUnmount(() => {
 }
 .file-name { font-size: 12.5px; font-weight: 500; }
 .file-meta { font-size: 11.5px; color: var(--stone); }
-/* 选中待编辑的卡片：常驻高亮描边（与 hover 同色，外加投影环不挤动布局） */
-.file-item.sel { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary), 0 1px 6px rgba(124, 58, 237, 0.12); }
+/* ---------- 选中卡片动效：旋转流光描边 + 上浮投影 + 选中瞬间脉冲环 ----------
+   原理：.sel 的边框透明化，流光环由 ::before 以 conic-gradient 沿 --sel-angle 旋转绘制，
+   只画出 1.5px 边环（mask 抠掉中间）；::after 在选中瞬间向外扩散一次脉冲环。 */
+@property --sel-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes sel-spin {
+  to { --sel-angle: 360deg; }
+}
+@keyframes sel-pulse {
+  0% { opacity: 0.5; transform: scale(0.985); }
+  100% { opacity: 0; transform: scale(1.07); }
+}
+.file-item { position: relative; }
+.file-item.sel {
+  border-color: transparent;
+  transform: translateY(-3px);
+  box-shadow: 0 12px 26px rgba(124, 58, 237, 0.18), 0 2px 6px rgba(124, 58, 237, 0.12);
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.file-item.sel::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 1;
+  border-radius: inherit; padding: 1.5px;
+  background: conic-gradient(
+    from var(--sel-angle),
+    rgba(139, 92, 246, 0.25), var(--primary) 22%, #c4b5fd 38%,
+    var(--primary) 58%, rgba(139, 92, 246, 0.25) 80%, rgba(139, 92, 246, 0.25)
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: sel-spin 3.2s linear infinite;
+  pointer-events: none;
+}
+.file-item.sel::after {
+  content: '';
+  position: absolute; inset: -1px; z-index: 1;
+  border-radius: inherit; border: 2px solid var(--primary);
+  opacity: 0; pointer-events: none;
+  animation: sel-pulse 0.5s ease-out 0.05s;
+}
+/* 选中徽标（✓）：与移除按钮同组，弹性弹出 */
+.fi-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.fi-chip {
+  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; background: var(--primary);
+  box-shadow: 0 0 0 3px var(--tint-lavender);
+}
+.chip-pop-enter-active { animation: sel-pulse-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.chip-pop-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }
+.chip-pop-enter-from, .chip-pop-leave-to { opacity: 0; transform: scale(0.3); }
+@keyframes sel-pulse-in {
+  0% { opacity: 0; transform: scale(0.3); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-item.sel { transform: none; }
+  .file-item.sel::before { animation: none; }
+  .file-item.sel::after { animation: none; }
+  .chip-pop-enter-active { animation: none; }
+}
 /* 已填主题 / 课程的卡片显示设置结果；未填的给待设置提示 */
 .file-assign {
   font-size: 11px; color: var(--brand-purple-800); background: var(--tint-lavender);
