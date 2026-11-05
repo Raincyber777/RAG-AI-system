@@ -40,9 +40,8 @@ interface InputFile {
   size: string
   preview?: string
   file?: File // 原始文件（创建纪要时随表单提交给后端）
-  checked?: boolean // 是否勾选参与生成（缺省视为已勾选，兼容回看态的临时条目）
-  theme?: string // 单独设置的课堂主题（未设置时用下方默认输入）
-  course?: string // 单独设置的所属课程
+  theme?: string // 该材料的课堂主题（点选卡片后在下方表单填写）
+  course?: string // 该材料的所属课程
 }
 
 const KIND_META = UPLOAD_KIND_META
@@ -50,72 +49,72 @@ const KIND_META = UPLOAD_KIND_META
 const inputFiles = ref<InputFile[]>([])
 const dragging = ref(false)
 const fileInput = ref<HTMLInputElement>()
-const classTitle = ref('')
-const courseName = ref('')
 const MAX_FILES = 8 // 同时生成多份纪要会并发占用转写 / 生成线程，上限控制在服务器可承受范围
 
-// ---------- 材料勾选：先勾选材料，再把课堂主题 / 课程「应用到选中」，支持分批设置 ----------
-const checkedFiles = computed(() => inputFiles.value.filter((f) => f.checked !== false))
-const checkedCount = computed(() => checkedFiles.value.length)
-function toggleCheck(f: InputFile) {
-  f.checked = f.checked === false
+// ---------- 逐份设置：点选材料卡片，下方表单直接编辑该份材料的主题 / 课程（队列里的材料都参与生成） ----------
+const selectedFile = ref<InputFile | null>(null)
+function selectFile(f: InputFile) {
+  selectedFile.value = f
+  themeSuggestOpen.value = false
 }
-function toggleAllChecked() {
-  const allOn = checkedCount.value === inputFiles.value.length
-  for (const f of inputFiles.value) f.checked = allOn ? false : true
-}
-function applyToChecked() {
-  if (!checkedCount.value) return
-  const t = classTitle.value.trim()
-  const c = courseName.value.trim()
-  if (!t && !c) {
-    flashZoneTip('请先填写课堂主题或选择所属课程，再应用到选中的材料')
-    return
-  }
-  for (const f of inputFiles.value) {
-    if (f.checked === false) continue
+const selectedTheme = computed({
+  get: () => selectedFile.value?.theme ?? '',
+  set(v: string) {
+    const f = selectedFile.value
+    if (!f) return
+    const t = v.trim()
     if (t) f.theme = t
+    else delete f.theme
+  },
+})
+const selectedCourse = computed({
+  get: () => selectedFile.value?.course ?? '',
+  set(v: string) {
+    const f = selectedFile.value
+    if (!f) return
+    const c = v.trim()
     if (c) f.course = c
-  }
-  flashZoneTip(`已把${[t && '主题', c && '课程'].filter(Boolean).join(' / ')}应用到选中的 ${checkedCount.value} 个材料`)
-}
-/** 该材料的实际生成参数：单独设置过用单独值，否则回退默认输入 */
+    else delete f.course
+  },
+})
 function effTheme(f: InputFile) {
-  return f.theme?.trim() || classTitle.value.trim()
+  return f.theme?.trim() || ''
 }
 function effCourse(f: InputFile) {
-  return f.course?.trim() || courseName.value.trim()
+  return f.course?.trim() || ''
 }
 
-// ---------- 单个材料设置：点卡片弹窗单独指定该材料的主题 / 课程（一个个设置） ----------
-const assignTarget = ref<InputFile | null>(null)
-const assignTheme = ref('')
-const assignCourse = ref('')
-function openAssign(f: InputFile) {
-  assignTarget.value = f
-  assignTheme.value = f.theme ?? ''
-  assignCourse.value = f.course ?? ''
-}
-function saveAssign() {
-  const f = assignTarget.value
+// ---------- 主题历史回填：已生成纪要的主题（连带课程）+ 本次已填主题，输入框聚焦 / 输入时下拉展示 ----------
+const themeHistory = computed(() => {
+  const seen = new Set<string>()
+  const out: { theme: string; course: string }[] = []
+  for (const n of classNotes.value) {
+    const t = n.title.trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    out.push({ theme: t, course: n.course })
+  }
+  for (const f of inputFiles.value) {
+    const t = f.theme?.trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    out.push({ theme: t, course: f.course?.trim() || '' })
+  }
+  return out
+})
+const themeSuggestOpen = ref(false)
+const themeSuggest = computed(() => {
+  const q = selectedTheme.value.trim().toLowerCase()
+  const hit = q ? themeHistory.value.filter((x) => x.theme.toLowerCase().includes(q)) : themeHistory.value
+  return hit.slice(0, 6)
+})
+function applyThemeSuggestion(x: { theme: string; course: string }) {
+  const f = selectedFile.value
   if (!f) return
-  const t = assignTheme.value.trim()
-  const c = assignCourse.value.trim()
-  if (t) f.theme = t
-  else delete f.theme
-  if (c) f.course = c
-  else delete f.course
-  assignTarget.value = null
-  flashZoneTip(t || c ? `已为「${f.name}」单独设置${[t && '主题', c && '课程'].filter(Boolean).join(' / ')}` : `已清除「${f.name}」的单独设置，将使用默认值`)
-}
-function clearAssign() {
-  const f = assignTarget.value
-  if (!f) return
-  delete f.theme
-  delete f.course
-  assignTheme.value = ''
-  assignCourse.value = ''
-  flashZoneTip(`已清除「${f.name}」的单独设置，将使用默认值`)
+  f.theme = x.theme
+  if (x.course) f.course = x.course
+  themeSuggestOpen.value = false
+  flashZoneTip(`已回填历史主题「${x.theme}」${x.course ? `，课程「${x.course}」` : ''}`)
 }
 
 // ---------- 所属课程：优先从课程表下拉选择，点“+”可新建（新课程同步到全局课程表） ----------
@@ -139,7 +138,7 @@ function confirmAddCourse() {
   const name = newCourse.value.trim()
   if (!name) { courseError.value = '请输入课程名称'; return }
   if (!addCourse(name)) { courseError.value = '该课程已存在，可直接选择'; return }
-  courseName.value = name
+  selectedCourse.value = name
   addingCourse.value = false
   courseError.value = ''
 }
@@ -158,7 +157,9 @@ function askDeleteCourse(name: string) {
 function confirmDeleteCourse() {
   const name = deleteCourseTarget.value
   if (name) void removeCourse(name).catch(() => flashZoneTip('删除课程失败，请确认后端已启动'))
-  if (courseName.value === name) courseName.value = ''
+  for (const f of inputFiles.value) {
+    if (f.course === name) delete f.course
+  }
   deleteCourseTarget.value = ''
 }
 
@@ -189,7 +190,9 @@ async function confirmRenameCourse() {
   try {
     const ok = await renameCourse(renameCourseTarget.value, name)
     if (!ok) { renameError.value = '该课程名已存在'; return }
-    if (courseName.value === renameCourseTarget.value) courseName.value = name
+    for (const f of inputFiles.value) {
+      if (f.course === renameCourseTarget.value) f.course = name
+    }
     closeRenameCourse()
   } catch {
     renameError.value = '重命名失败，请确认后端已启动'
@@ -253,6 +256,7 @@ function handleFiles(list: FileList | null | undefined) {
     }
     if (kind === 'image') item.preview = URL.createObjectURL(f)
     inputFiles.value.push(item)
+    selectedFile.value = item // 新材料自动选中，下方表单随即等待填写这份材料的主题 / 课程
     accepted++
   }
   if (accepted === 0 && inputFiles.value.length < MAX_FILES) {
@@ -266,6 +270,11 @@ function removeFile(id: string) {
     const prev = inputFiles.value[idx]
     if (prev?.preview) URL.revokeObjectURL(prev.preview)
     inputFiles.value.splice(idx, 1)
+    if (selectedFile.value?.id === id) {
+      // 移除的正是选中项：就近顺延选中，保持下方表单始终有明确的编辑对象
+      selectedFile.value = inputFiles.value[Math.min(idx, inputFiles.value.length - 1)] ?? null
+      themeSuggestOpen.value = false
+    }
   }
 }
 
@@ -279,6 +288,8 @@ function revokeAllPreviews() {
 function confirmClearFiles() {
   revokeAllPreviews()
   inputFiles.value = []
+  selectedFile.value = null
+  themeSuggestOpen.value = false
   showClearConfirm.value = false
 }
 
@@ -289,17 +300,15 @@ const kindCount = computed(() => {
 })
 const canStart = computed(
   () =>
-    checkedFiles.value.length > 0 &&
-    checkedFiles.value.every((f) => effTheme(f) !== '') &&
-    checkedFiles.value.every((f) => effCourse(f) !== '') && // 主题 / 课程必填（单独设置或默认值均可）
+    inputFiles.value.length > 0 &&
+    inputFiles.value.every((f) => effTheme(f) !== '' && effCourse(f) !== '') && // 每份材料都须填好主题 / 课程
     (genState.value === 'idle' || genState.value === 'done' || genState.value === 'stopped')
 )
-// 生成按钮旁的缺项提示（按缺失顺序给出第一条）
+// 生成按钮旁的缺项提示
 const startHint = computed(() => {
   if (!inputFiles.value.length) return '请先上传课堂材料'
-  if (!checkedCount.value) return '请先勾选要生成纪要的材料'
-  if (!checkedFiles.value.every((f) => effTheme(f))) return '请填写课堂主题（或应用到选中材料）'
-  if (!checkedFiles.value.every((f) => effCourse(f))) return '请选择所属课程（或应用到选中材料）'
+  const missing = inputFiles.value.filter((f) => !effTheme(f) || !effCourse(f)).length
+  if (missing) return `还有 ${missing} 个材料未设置课堂主题 / 所属课程，点击材料卡片逐一填写`
   return ''
 })
 
@@ -595,8 +604,8 @@ function startGenerate() {
   steps.value = buildSteps(inputFiles.value)
   genState.value = 'running'
 
-  // 每个勾选且带文件的材料各建一份纪要：主题 / 课程优先用该材料单独设置的值，未设置时用上方默认值
-  const targets = checkedFiles.value.filter((f) => f.file)
+  // 每份带文件的材料各建一份纪要，主题 / 课程用该材料逐份设置的值
+  const targets = inputFiles.value.filter((f) => f.file)
   if (!targets.length) { // 兜底：canStart 已拦截勾选为空的情况，这里防无文件勾选项
     genState.value = 'stopped'
     genError.value = '请先上传要生成纪要的材料'
@@ -733,9 +742,7 @@ async function showNoteFromQuery(id: string | null) {
   if (!exists) return
   note.value = exists
   savedId.value = exists.id
-  classTitle.value = exists.title
   if (!courseList.value.includes(exists.course)) addCourse(exists.course)
-  courseName.value = exists.course
   genState.value = 'done'
   themeShown.value = exists.theme
   headersShown.value = ['points', 'definitions', 'emphasized']
@@ -832,15 +839,11 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="zoneTip" class="zone-tip"><AppIcon name="alert" :size="13" /> {{ zoneTip }}</p>
 
-          <!-- 材料清单：横向滚动卡片条，最多 12 个；可勾选部分材料单独设置主题 / 课程 -->
+          <!-- 材料清单：横向滚动卡片条，最多 8 个；点击卡片选中，在下方表单逐份填写主题 / 课程 -->
           <div v-if="inputFiles.length" class="queue">
             <div class="fl-head">
-              <span class="text-caption">已选 {{ checkedCount }} / {{ inputFiles.length }} 个材料</span>
+              <span class="text-caption">已选 {{ inputFiles.length }} 个材料</span>
               <div class="fl-head-actions">
-                <button class="fl-clear" type="button" @click="toggleAllChecked">
-                  <AppIcon :name="checkedCount === inputFiles.length ? 'square' : 'check'" :size="13" />
-                  {{ checkedCount === inputFiles.length ? '全不选' : '全选' }}
-                </button>
                 <button
                   class="fl-clear"
                   type="button"
@@ -852,17 +855,17 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="file-list">
-              <!-- 点卡片弹窗单独设置该材料的主题 / 课程；勾选区与移除按钮不冒泡 -->
+              <!-- 点卡片选中该材料，在下方表单填写它的主题 / 课程；移除按钮不冒泡 -->
               <div
                 v-for="f in inputFiles"
                 :key="f.id"
                 class="file-item"
-                :class="{ unchecked: f.checked === false }"
+                :class="{ sel: selectedFile?.id === f.id }"
                 role="button"
                 tabindex="0"
-                :aria-label="`设置材料 ${f.name} 的课堂主题与所属课程`"
-                @click="openAssign(f)"
-                @keydown.enter.prevent="openAssign(f)"
+                :aria-label="`选择并设置材料 ${f.name} 的课堂主题与所属课程`"
+                @click="selectFile(f)"
+                @keydown.enter.prevent="selectFile(f)"
               >
                 <div class="fi-top">
                   <img v-if="f.preview" :src="f.preview" class="file-thumb" alt="图片预览" />
@@ -873,42 +876,55 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="file-name ellipsis" :title="f.name">{{ f.name }}</div>
                 <div class="file-meta">{{ KIND_META[f.kind].label }} · {{ f.size }}</div>
-                <!-- 勾选参与生成：点击卡片下沿的复选区切换，取消勾选的材料不参与本次生成 -->
-                <label
-                  class="fi-check"
-                  role="checkbox"
-                  :aria-checked="f.checked !== false"
-                  tabindex="0"
-                  @click.stop.prevent="toggleCheck(f)"
-                  @keydown.enter.prevent="toggleCheck(f)"
-                  @keydown.space.prevent="toggleCheck(f)"
-                >
-                  <span class="fi-check-box" :class="{ on: f.checked !== false }">
-                    <AppIcon v-if="f.checked !== false" name="check" :size="10" />
-                  </span>
-                  参与生成
-                </label>
-                <div v-if="f.theme || f.course" class="file-assign ellipsis" :title="`${f.theme || '默认主题'} · ${f.course || '默认课程'}`">
-                  {{ f.theme || '默认主题' }} · {{ f.course || '默认课程' }}
+                <div v-if="f.theme || f.course" class="file-assign ellipsis" :title="[f.theme, f.course].filter(Boolean).join(' · ')">
+                  {{ [f.theme, f.course].filter(Boolean).join(' · ') }}
                 </div>
+                <div v-else class="file-assign assign-todo">待设置主题 / 课程</div>
               </div>
             </div>
           </div>
 
-          <!-- 课堂信息 -->
-          <div class="fields">
-            <div class="field">
+          <!-- 单份材料信息：点选上方卡片后在此填写；主题输入框下拉展示之前填写过的记录（点选回填主题与课程） -->
+          <div v-if="selectedFile" class="fields assign-now">
+            <p class="assign-target">
+              正在设置：<span class="ellipsis" :title="selectedFile.name">{{ selectedFile.name }}</span>
+            </p>
+            <div class="field theme-field">
               <label class="field-label" for="class-title">课堂主题</label>
-              <input id="class-title" v-model="classTitle" class="input" placeholder="例如：第12讲 泰勒展开与级数" />
+              <input
+                id="class-title"
+                v-model="selectedTheme"
+                class="input"
+                placeholder="例如：第12讲 泰勒展开与级数"
+                maxlength="60"
+                autocomplete="off"
+                @focus="themeSuggestOpen = themeHistory.length > 0"
+                @input="themeSuggestOpen = true"
+                @blur="themeSuggestOpen = false"
+                @keydown.esc.prevent="themeSuggestOpen = false"
+              />
+              <div v-if="themeSuggestOpen && themeSuggest.length" class="theme-suggest">
+                <div class="theme-suggest-head">之前填写过的主题（点选回填）</div>
+                <button
+                  v-for="x in themeSuggest"
+                  :key="x.theme"
+                  type="button"
+                  class="theme-suggest-item"
+                  @mousedown.prevent="applyThemeSuggestion(x)"
+                >
+                  <span class="ellipsis ts-theme">{{ x.theme }}</span>
+                  <span v-if="x.course" class="ts-course">{{ x.course }}</span>
+                </button>
+              </div>
             </div>
             <div class="field">
               <span class="field-label">所属课程</span>
               <div v-if="!addingCourse" class="course-row">
                 <AppSelect
-                  v-model="courseName"
+                  v-model="selectedCourse"
                   :options="courseOptions"
                   placeholder="请选择所属课程"
-                  aria-label="选择所属课程"
+                  aria-label="选择这份材料的所属课程"
                   deletable
                   renamable
                   @delete="askDeleteCourse"
@@ -937,18 +953,6 @@ onBeforeUnmount(() => {
               </div>
               <p v-if="courseError" class="course-err"><AppIcon name="alert" :size="12" /> {{ courseError }}</p>
             </div>
-          </div>
-
-          <!-- 应用到选中：把上方主题 / 课程批量设置给勾选的材料（支持分批设置不同材料） -->
-          <div v-if="inputFiles.length" class="apply-row">
-            <button
-              class="btn btn-ghost btn-sm"
-              :disabled="!checkedCount || genState === 'running' || genState === 'streaming'"
-              @click="applyToChecked"
-            >
-              <AppIcon name="check" :size="13" /> 应用到选中（{{ checkedCount }}）
-            </button>
-            <span class="apply-hint">先在材料清单勾选，再把课堂主题 / 所属课程应用到选中；未单独设置的材料使用上方默认值</span>
           </div>
 
           <!-- 操作区 -->
@@ -1127,30 +1131,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 单个材料设置弹窗：点卡片单独指定主题 / 课程（留空回退默认值） -->
-    <div v-if="assignTarget" class="modal-mask" @click.self="assignTarget = null">
-      <div class="modal modal-sm">
-        <div class="modal-title">设置这份材料的信息</div>
-        <p class="modal-sub assign-file ellipsis" :title="assignTarget.name">{{ assignTarget.name }}</p>
-        <div class="field">
-          <label class="field-label" for="assign-theme">课堂主题</label>
-          <input id="assign-theme" v-model="assignTheme" class="input" placeholder="留空则使用默认主题" maxlength="60" />
-        </div>
-        <div class="field">
-          <span class="field-label">所属课程</span>
-          <AppSelect v-model="assignCourse" :options="courseOptions" placeholder="留空则使用默认课程" aria-label="这份材料的所属课程" />
-        </div>
-        <p class="assign-default-hint">
-          当前默认：主题「{{ classTitle.trim() || '未填' }}」 · 课程「{{ courseName.trim() || '未选' }}」。生成完成后纪要会自动归入各自所选的课程。
-        </p>
-        <div class="modal-actions">
-          <button v-if="assignTarget.theme || assignTarget.course" class="btn btn-ghost assign-clear" type="button" @click="clearAssign">清除单独设置</button>
-          <button class="btn btn-secondary" @click="assignTarget = null">取消</button>
-          <button class="btn btn-primary" @click="saveAssign">保存</button>
-        </div>
-      </div>
-    </div>
-
     <!-- 删除课程警示弹窗：删除将连带清除该课程全部相关记录 -->
     <div v-if="deleteCourseTarget" class="modal-mask" @click.self="deleteCourseTarget = ''">
       <div class="modal modal-sm">
@@ -1303,26 +1283,16 @@ onBeforeUnmount(() => {
 }
 .file-name { font-size: 12.5px; font-weight: 500; }
 .file-meta { font-size: 11.5px; color: var(--stone); }
-/* 勾选参与生成：取消勾选的卡片整体淡化，不参与本次生成 */
-.file-item.unchecked { opacity: 0.55; }
-.fi-check {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11.5px; font-weight: 500; color: var(--slate);
-  cursor: pointer; user-select: none; width: fit-content;
-}
-.fi-check:hover { color: var(--primary); }
-.fi-check:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
-.fi-check-box {
-  width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0;
-  border: 1.5px solid var(--hairline-strong); background: var(--canvas);
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  transition: all 0.12s ease;
-}
-.fi-check-box.on { background: var(--primary); border-color: var(--primary); }
-/* 单独设置过主题 / 课程的卡片显示分配结果 */
+/* 选中待编辑的卡片：常驻高亮描边（与 hover 同色，外加投影环不挤动布局） */
+.file-item.sel { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary), 0 1px 6px rgba(124, 58, 237, 0.12); }
+/* 已填主题 / 课程的卡片显示设置结果；未填的给待设置提示 */
 .file-assign {
   font-size: 11px; color: var(--brand-purple-800); background: var(--tint-lavender);
   border-radius: var(--radius-sm); padding: 2.5px 7px;
+}
+.file-assign.assign-todo {
+  color: var(--stone); background: var(--surface);
+  border: 1px dashed var(--hairline-strong); padding: 1.5px 6px;
 }
 .icon-btn {
   border: none; background: transparent; color: var(--stone);
@@ -1382,17 +1352,33 @@ onBeforeUnmount(() => {
 
 .gen-actions { display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid var(--hairline-soft); flex-wrap: wrap; }
 .gen-hint { font-size: 12px; color: var(--stone); }
-/* 应用到选中：批量把主题 / 课程设置给勾选的材料 */
-.apply-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-.apply-hint { font-size: 12px; color: var(--stone); line-height: 1.5; }
 
-/* 单个材料设置弹窗 */
-.assign-file {
-  font-weight: 600; color: var(--ink);
-  background: var(--surface); border-radius: var(--radius-sm); padding: 6px 10px;
+/* 逐份设置表单：正在设置的材料名 + 主题历史回填下拉 */
+.assign-now { margin-top: 12px; position: relative; }
+.assign-target {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 5px;
+  margin: 0; min-width: 0; font-size: 12.5px; color: var(--slate);
 }
-.assign-default-hint { font-size: 12px; color: var(--stone); line-height: 1.6; }
-.assign-clear { margin-right: auto; }
+.assign-target span { min-width: 0; font-weight: 600; color: var(--ink); }
+.theme-field { position: relative; }
+.theme-suggest {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 50;
+  padding: 5px; background: var(--canvas); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-modal);
+}
+.theme-suggest-head { padding: 5px 10px 3px; font-size: 11.5px; color: var(--stone); }
+.theme-suggest-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 8px 10px; font-family: inherit; font-size: 13px; color: var(--ink);
+  background: transparent; border: none; border-radius: var(--radius-sm);
+  cursor: pointer; text-align: left; transition: background 0.12s ease;
+}
+.theme-suggest-item:hover { background: var(--surface-soft); }
+.ts-theme { flex: 1; min-width: 0; }
+.ts-course {
+  flex-shrink: 0; font-size: 11px; color: var(--brand-purple-800);
+  background: var(--tint-lavender); border-radius: var(--radius-sm); padding: 1px 6px;
+}
 .stopped-tip { margin-top: 10px; font-size: 12.5px; color: var(--error); }
 .btn-del { background: var(--error); color: #fff; }
 .btn-del:hover { background: #b42318; }
