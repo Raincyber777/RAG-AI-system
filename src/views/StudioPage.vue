@@ -213,8 +213,53 @@ function onFileChange(e: Event) {
   handleFiles((e.target as HTMLInputElement).files)
   ;(e.target as HTMLInputElement).value = ''
 }
-function onDrop(e: DragEvent) {
+// 文件夹选择器：webkitdirectory 让选中的是整个文件夹（目录内全部文件逐个交给 handleFiles 校验）
+const dirInput = ref<HTMLInputElement>()
+function pickFolder() {
+  if (genState.value === 'running' || genState.value === 'streaming') return
+  dirInput.value?.click()
+}
+function onDirChange(e: Event) {
+  handleFiles((e.target as HTMLInputElement).files)
+  ;(e.target as HTMLInputElement).value = ''
+}
+function entryFile(entry: FileSystemFileEntry): Promise<File | null> {
+  return new Promise((res) => entry.file(res, () => res(null)))
+}
+/** 递归读取拖入的文件夹：readEntries 每次最多返回 100 条，需循环读空；最多收集 MAX_FILES 个 */
+async function collectEntryFiles(entry: FileSystemEntry, out: File[]): Promise<void> {
+  if (out.length >= MAX_FILES) return
+  if (entry.isFile) {
+    const f = await entryFile(entry as FileSystemFileEntry)
+    if (f) out.push(f)
+    return
+  }
+  const reader = (entry as FileSystemDirectoryEntry).createReader()
+  for (;;) {
+    const batch = await new Promise<FileSystemEntry[]>((res) => reader.readEntries((es) => res(es), () => res([])))
+    if (!batch.length) break
+    for (const e of batch) await collectEntryFiles(e, out)
+    if (out.length >= MAX_FILES) return
+  }
+}
+async function onDrop(e: DragEvent) {
   dragging.value = false
+  // DataTransferItem 在事件让出后失效，须先同步取出 entries 再 await
+  const entries = (e.dataTransfer?.items ? Array.from(e.dataTransfer.items) : [])
+    .map((it) => it.webkitGetAsEntry?.())
+    .filter((en): en is FileSystemEntry => !!en)
+  if (entries.some((en) => en.isDirectory)) {
+    const files: File[] = []
+    for (const en of entries) {
+      if (en.isDirectory) await collectEntryFiles(en, files)
+      else {
+        const f = await entryFile(en as FileSystemFileEntry)
+        if (f) files.push(f)
+      }
+    }
+    handleFiles(files)
+    return
+  }
   handleFiles(e.dataTransfer?.files)
 }
 
@@ -227,10 +272,11 @@ function flashZoneTip(msg: string) {
   zoneTipTimer = window.setTimeout(() => (zoneTip.value = ''), 2600)
 }
 
-function handleFiles(list: FileList | null | undefined) {
+function handleFiles(list: FileList | File[] | null | undefined) {
   if (!list) return
   let accepted = 0
   let dupCount = 0
+  let unsupported = 0
   for (const f of Array.from(list)) {
     // 最多同时上传 MAX_FILES 个材料（相同或不同文件合计），超出部分给出提示
     if (inputFiles.value.length >= MAX_FILES) {
@@ -238,7 +284,10 @@ function handleFiles(list: FileList | null | undefined) {
       break
     }
     const kind = detectUploadKind(f.name)
-    if (!kind) continue
+    if (!kind) {
+      unsupported++
+      continue
+    }
     if (f.size > UPLOAD_MAX_MB[kind] * 1024 * 1024) {
       flashZoneTip(`「${f.name}」超过${UPLOAD_KIND_META[kind].label}上限 ${UPLOAD_MAX_MB[kind]}MB，未添加`)
       continue
@@ -261,6 +310,8 @@ function handleFiles(list: FileList | null | undefined) {
   }
   if (accepted === 0 && inputFiles.value.length < MAX_FILES) {
     flashZoneTip(dupCount > 0 ? '所选材料已在清单中' : '未识别到支持的文件类型')
+  } else if (unsupported > 0) {
+    flashZoneTip(`已添加 ${accepted} 个材料，跳过 ${unsupported} 个不支持的文件`)
   }
 }
 
@@ -294,7 +345,7 @@ function confirmClearFiles() {
 }
 
 const kindCount = computed(() => {
-  const c: Record<FileKind, number> = { audio: 0, image: 0, video: 0, ppt: 0, doc: 0 }
+  const c: Record<FileKind, number> = { audio: 0, image: 0, video: 0, ppt: 0, doc: 0, zip: 0 }
   for (const f of inputFiles.value) c[f.kind]++
   return c
 })
@@ -335,6 +386,9 @@ function buildSteps(files: InputFile[]): AgentStep[] {
   }
   if (kinds.has('video') || kinds.has('image') || kinds.has('ppt')) {
     steps.push({ key: 'vision', label: '图片理解', desc: '多模态大模型识别板书 / 幻灯片文字与公式', icon: 'image', status: 'pending' })
+  }
+  if (kinds.has('zip')) {
+    steps.push({ key: 'unzip', label: '解压压缩包', desc: '扫描内嵌文件，仅解析支持的文档格式', icon: 'folder', status: 'pending' })
   }
   if (kinds.has('doc')) {
     steps.push({ key: 'docs', label: '讲义文本抽取', desc: 'PDF / Word / 文本 · 段落切分与公式定位', icon: 'file', status: 'pending' })
@@ -397,7 +451,53 @@ let revealTimer: number | null = null
 // 真实流水线状态轮询（后端 processing → done / failed）
 let pollTimer: number | null = null
 let pollCount = 0
-// 多材料生成：主材料在右侧流式展示，其余勾选材料后台轮询收敛（「我的纪要」同步可见）
+// ---------- 本次生成的多份纪要：pills / 左右箭头切换查看（完成态可切换，状态实时同步） ----------
+interface RunNoteItem {
+  id: string
+  title: string
+  status: 'done' | 'processing' | 'failed'
+  failReason?: string
+}
+const runNotes = ref<RunNoteItem[]>([])
+const activeRunIdx = ref(0)
+const activeRunNote = computed(() => runNotes.value[activeRunIdx.value] ?? null)
+const showRunSwitch = computed(
+  () => runNotes.value.length > 1 && (genState.value === 'done' || genState.value === 'stopped')
+)
+/** 生成中 / 失败的活动纪要：note 面板显示占位卡片而不是空内容 */
+const runPending = computed(() => activeRunNote.value?.status === 'processing')
+const runFailed = computed(() => activeRunNote.value?.status === 'failed')
+
+/** 任意一次轮询拿到新状态都同步进 runNotes；正在查看的那份完成时自动渲染内容 */
+function syncRunNote(n: ApiNote) {
+  const item = runNotes.value.find((x) => x.id === String(n.id))
+  if (!item) return
+  item.status = n.status
+  item.failReason = n.fail_reason
+  if (n.status !== 'processing' && activeRunIdx.value === runNotes.value.indexOf(item)) {
+    if (n.status === 'done') showRunNote(activeRunIdx.value)
+  }
+}
+/** 切到查看第 i 份：走回看态同一套渲染路径（全板块直出） */
+function showRunNote(i: number) {
+  const r = runNotes.value[i]
+  if (!r) return
+  activeRunIdx.value = i
+  activeSource.value = null
+  activeSection.value = ''
+  const cn = findNote(r.id)
+  if (!cn) return
+  note.value = cn
+  savedId.value = cn.id
+  themeShown.value = cn.theme
+  headersShown.value = ['points', 'definitions', 'emphasized']
+  for (const k of Object.keys(itemsShown)) itemsShown[k] = 999
+}
+function switchRun(delta: number) {
+  const next = activeRunIdx.value + delta
+  if (next < 0 || next >= runNotes.value.length) return
+  showRunNote(next)
+}
 let extrasTimer: number | null = null
 let extrasPollCount = 0
 const extrasPending = ref(0)
@@ -438,6 +538,7 @@ function pollExtras(list: ApiNote[]) {
     for (const id of [...extrasPendingIds]) {
       void notesApi.detail(id).then((n) => {
         updateNote(String(n.id), noteFromApi(n))
+        syncRunNote(n)
         if (n.status !== 'processing') extrasPendingIds.delete(String(n.id))
         extrasPending.value = extrasPendingIds.size
       }).catch(() => { /* 网络抖动下一轮再拉 */ })
@@ -584,11 +685,20 @@ async function confirmDiscard() {
   discarding.value = false
   showDiscardConfirm.value = false
   removeClassNote(id)
-  resetAll()
+  extrasPendingIds.delete(id)
+  // 批量生成时只移除这一份，切到相邻纪要继续看；单份生成维持原样整体重置
+  const ri = runNotes.value.findIndex((x) => x.id === id)
+  if (ri >= 0) {
+    runNotes.value.splice(ri, 1)
+    if (!runNotes.value.length) resetAll()
+    else showRunNote(Math.min(ri, runNotes.value.length - 1))
+  } else {
+    resetAll()
+  }
   flashZoneTip('已丢弃该纪要，不会出现在「我的纪要」')
 }
 
-function startGenerate() {
+async function startGenerate() {
   if (!canStart.value) return
   // 清除可能残留的回看 query：生成新纪要后从其他页面返回时应保持新现场，而非误切回看旧纪要
   if (route.query.note) router.replace({ path: '/studio' })
@@ -601,77 +711,85 @@ function startGenerate() {
   note.value = null
   genError.value = ''
   extrasPending.value = 0
+  runNotes.value = []
+  activeRunIdx.value = 0
   steps.value = buildSteps(inputFiles.value)
   genState.value = 'running'
+  runSteps()
 
   // 每份带文件的材料各建一份纪要，主题 / 课程用该材料逐份设置的值
   const targets = inputFiles.value.filter((f) => f.file)
-  if (!targets.length) { // 兜底：canStart 已拦截勾选为空的情况，这里防无文件勾选项
+  if (!targets.length) { // 兜底：canStart 已拦截清单为空的情况，这里防无文件材料
     genState.value = 'stopped'
     genError.value = '请先上传要生成纪要的材料'
     return
   }
-  const creates = targets.map((f) =>
-    notesApi
-      .create({ course: effCourse(f), title: effTheme(f), duration: '' }, f.file)
-      .then((n) => ({ ok: true as const, n }))
-      .catch((e: unknown) => ({ ok: false as const, e })),
-  )
-  Promise.all(creates).then((results) => {
-    if (genState.value !== 'running') return // 用户已停止 / 重置
-    const okList = results
-      .filter((r): r is { ok: true; n: ApiNote } => r.ok)
-      .map((r) => r.n)
-    const failed = results.find((r): r is { ok: false; e: unknown } => !r.ok)
-    if (!okList.length) {
-      clearAllTimers()
-      genState.value = 'stopped'
-      genError.value = failed && failed.e instanceof ApiError ? failed.e.message : '生成请求失败，请确认后端已启动'
-      return
+
+  // 按队列顺序依次提交：逐个上传建纪要（避免并发上传争抢，且提交顺序 = 界面队列顺序）
+  const okList: ApiNote[] = []
+  let failedCount = 0
+  let firstError: unknown = null
+  for (const f of targets) {
+    if (genState.value !== 'running') return // 用户已停止
+    try {
+      okList.push(await notesApi.create({ course: effCourse(f), title: effTheme(f), duration: '' }, f.file))
+    } catch (e) {
+      failedCount++
+      if (!firstError) firstError = e
     }
-    if (failed) genError.value = `${results.length - okList.length} 个材料提交失败，其余正在正常生成`
-    // 第一个成功的材料作为主材料在右侧流式展示，其余交给后台补拉（「我的纪要」同步收敛）
-    const [head, ...rest] = okList
-    if (!head) return // okList 非空才走到这里
-    if (rest.length) {
-      extrasPending.value = rest.length
-      pollExtras(rest)
-    }
-    if (head.status === 'processing') {
-      // 真实流水线进行中（转写 / 生成耗时数十秒）：轮询详情直至完成，
-      // 步骤条停在「生成纪要」running，内容就绪后再进入流式渲染
-      pollCount = 0
-      pollTimer = window.setInterval(async () => {
-        pollCount++
-        if (pollCount > 450) { // 约 30 分钟仍未完成（后端常驻 worker 继续跑，不再算失败）
-          clearMainTimers() // 主流程停止；材料转入后台补拉继续收敛（pollExtras 不受 clearMainTimers 影响）
+  }
+  if (genState.value !== 'running') return // 用户已停止 / 重置
+  if (!okList.length) {
+    clearAllTimers()
+    genState.value = 'stopped'
+    genError.value = firstError instanceof ApiError ? firstError.message : '生成请求失败，请确认后端已启动'
+    return
+  }
+  if (failedCount) genError.value = `${failedCount} 个材料提交失败，其余正在正常生成`
+  runNotes.value = okList.map((n) => ({ id: String(n.id), title: n.title, status: n.status, failReason: n.fail_reason }))
+
+  // 第一个成功的材料作为主材料在右侧流式展示，其余交给后台补拉（「我的纪要」同步收敛）
+  const [head, ...rest] = okList
+  if (!head) return // okList 非空才走到这里
+  if (rest.length) {
+    extrasPending.value = rest.length
+    pollExtras(rest)
+  }
+  if (head.status === 'processing') {
+    // 真实流水线进行中（转写 / 生成耗时数十秒）：轮询详情直至完成，
+    // 步骤条停在「生成纪要」running，内容就绪后再进入流式渲染
+    pollCount = 0
+    pollTimer = window.setInterval(async () => {
+      pollCount++
+      if (pollCount > 450) { // 约 30 分钟仍未完成（后端常驻 worker 继续跑，不再算失败）
+        clearMainTimers() // 主流程停止；材料转入后台补拉继续收敛（pollExtras 不受 clearMainTimers 影响）
+        genState.value = 'stopped'
+        genError.value = '生成时间较长，已转入后台继续生成，完成后会自动出现在「我的纪要」，无需重新处理'
+        pollExtras([head]) // 主材料同样进入后台补拉：done / failed 都会同步进「我的纪要」
+        return
+      }
+      try {
+        const n = await notesApi.detail(String(head.id))
+        if (n.status === 'done') {
+          clearMainTimers()
+          note.value = noteFromApi(n)
+          syncRunNote(n)
+          tryBeginStreaming()
+        } else if (n.status === 'failed') {
+          clearMainTimers()
           genState.value = 'stopped'
-          genError.value = '生成时间较长，已转入后台继续生成，完成后会自动出现在「我的纪要」，无需重新处理'
-          pollExtras([head]) // 主材料同样进入后台补拉：done / failed 都会同步进「我的纪要」
-          return
+          syncRunNote(n)
+          // 后端已写入面向用户的失败原因（如「未识别到语音内容」），有则优先展示
+          genError.value = n.fail_reason
+            ? `生成失败：${n.fail_reason}`
+            : '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
         }
-        try {
-          const n = await notesApi.detail(String(head.id))
-          if (n.status === 'done') {
-            clearMainTimers()
-            note.value = noteFromApi(n)
-            tryBeginStreaming()
-          } else if (n.status === 'failed') {
-            clearMainTimers()
-            genState.value = 'stopped'
-            // 后端已写入面向用户的失败原因（如「未识别到语音内容」），有则优先展示
-            genError.value = n.fail_reason
-              ? `生成失败：${n.fail_reason}`
-              : '生成失败：材料处理未成功（当前支持 音频 / 视频 / 图片 / PPT / PDF / Word / Excel / 文本 / 压缩包），可重新处理或更换材料'
-          }
-        } catch { /* 网络抖动等下一轮 */ }
-      }, 4000)
-      return
-    }
-    note.value = noteFromApi(head)
-    tryBeginStreaming()
-  })
-  runSteps()
+      } catch { /* 网络抖动等下一轮 */ }
+    }, 4000)
+    return
+  }
+  note.value = noteFromApi(head)
+  tryBeginStreaming()
 }
 
 function stopGenerate() {
@@ -690,6 +808,8 @@ function resetAll() {
   steps.value = []
   genError.value = ''
   extrasPending.value = 0
+  runNotes.value = []
+  activeRunIdx.value = 0
   themeShown.value = ''
   headersShown.value = []
   for (const k of Object.keys(itemsShown)) itemsShown[k] = 0
@@ -742,6 +862,8 @@ async function showNoteFromQuery(id: string | null) {
   if (!exists) return
   note.value = exists
   savedId.value = exists.id
+  runNotes.value = []
+  activeRunIdx.value = 0
   if (!courseList.value.includes(exists.course)) addCourse(exists.course)
   genState.value = 'done'
   themeShown.value = exists.theme
@@ -755,6 +877,9 @@ async function showNoteFromQuery(id: string | null) {
 }
 
 onMounted(() => {
+  // webkitdirectory 非标准属性：用 setAttribute 兜底，避免模板属性的类型报错
+  dirInput.value?.setAttribute('webkitdirectory', '')
+  dirInput.value?.setAttribute('directory', '')
   const id = route.query.note
   void showNoteFromQuery(typeof id === 'string' ? id : null)
 })
@@ -822,11 +947,11 @@ onBeforeUnmount(() => {
             @drop.prevent="onDrop"
           >
             <div class="upload-icon"><AppIcon name="upload" :size="24" /></div>
-            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text">点击上传</span>（可多选 / 一次拖入多个）</div>
+            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFiles" @keydown.enter.stop.prevent="pickFiles">点击上传</span> / <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFolder" @keydown.enter.stop.prevent="pickFolder">上传文件夹</span>（可多选 / 整个文件夹拖入）</div>
             <div v-else class="upload-text">已达 {{ MAX_FILES }} 个材料上限，可先移除部分再上传</div>
             <!-- 多文件上传提示徽章：呼吸光晕突出「可批量」，空态与未满时展示 -->
             <div v-if="inputFiles.length < MAX_FILES" class="multi-badge">
-              <AppIcon name="layers" :size="13" /> 支持一次添加多个材料，批量生成纪要（最多 {{ MAX_FILES }} 个）
+              <AppIcon name="layers" :size="13" /> 支持批量：多选 / 文件夹 / zip 压缩包，按队列顺序依次生成（最多 {{ MAX_FILES }} 个材料）
             </div>
             <div class="kind-hints">
               <span class="kind-hint"><AppIcon name="headphones" :size="13" /> 音频 mp3 / wav / m4a 等</span>
@@ -834,8 +959,10 @@ onBeforeUnmount(() => {
               <span class="kind-hint"><AppIcon name="film" :size="13" /> 视频 mp4 / mov / mkv 等</span>
               <span class="kind-hint"><AppIcon name="layers" :size="13" /> PPT ppt / pptx</span>
               <span class="kind-hint"><AppIcon name="file" :size="13" /> 文档 pdf / word / excel 等</span>
+              <span class="kind-hint"><AppIcon name="folder" :size="13" /> 压缩包 zip（解出多个文档合并成一份纪要）</span>
             </div>
             <input ref="fileInput" type="file" multiple hidden :accept="uploadAcceptAttr" @change="onFileChange" />
+            <input ref="dirInput" type="file" multiple hidden @change="onDirChange" />
           </div>
           <p v-if="zoneTip" class="zone-tip"><AppIcon name="alert" :size="13" /> {{ zoneTip }}</p>
 
@@ -1025,9 +1152,30 @@ onBeforeUnmount(() => {
               <button class="btn btn-ghost btn-sm" :disabled="discarding" @click="showDiscardConfirm = true">
                 <AppIcon name="trash" :size="14" /> 丢弃
               </button>
-              <button class="btn btn-secondary btn-sm" @click="exportNote"><AppIcon name="download" :size="14" /> 导出 Markdown</button>
-              <button class="btn btn-primary btn-sm" @click="goQA"><AppIcon name="chat" :size="14" /> 智能问答</button>
+              <template v-if="!activeRunNote || activeRunNote.status === 'done'">
+                <button class="btn btn-secondary btn-sm" @click="exportNote"><AppIcon name="download" :size="14" /> 导出 Markdown</button>
+                <button class="btn btn-primary btn-sm" @click="goQA"><AppIcon name="chat" :size="14" /> 智能问答</button>
+              </template>
             </div>
+          </div>
+
+          <!-- 批量生成的多份纪要切换条：pills + 左右箭头，完成态可切换 -->
+          <div v-if="showRunSwitch" class="run-switch">
+            <button class="rs-arrow" :disabled="activeRunIdx === 0" aria-label="查看上一份纪要" @click="switchRun(-1)"><AppIcon name="chevron-left" :size="15" /></button>
+            <div class="rs-pills">
+              <button
+                v-for="(r, i) in runNotes"
+                :key="r.id"
+                class="rs-pill"
+                :class="{ on: i === activeRunIdx }"
+                :title="r.title"
+                @click="showRunNote(i)"
+              >
+                <span class="rs-pill-title ellipsis">{{ r.title }}</span>
+                <span class="rs-dot" :class="'rs-dot-' + r.status" />
+              </button>
+            </div>
+            <button class="rs-arrow" :disabled="activeRunIdx === runNotes.length - 1" aria-label="查看下一份纪要" @click="switchRun(1)"><AppIcon name="chevron-right" :size="15" /></button>
           </div>
 
           <!-- 空态 -->
@@ -1035,6 +1183,18 @@ onBeforeUnmount(() => {
             <div class="note-empty-icon"><AppIcon name="spark" :size="26" /></div>
             <div class="h4">纪要将在这里生成</div>
             <p class="text-sm">按「课程主题 / 核心知识点 / 重要定义与公式 / 重点问题」自动生成<br />课堂中没有的内容会自动省略</p>
+          </div>
+
+          <!-- 批量查看时，仍在生成 / 失败的那份显示占位说明，完成后自动渲染内容 -->
+          <div v-else-if="showRunSwitch && runPending" class="note-empty run-wait">
+            <span class="spinner" style="width:22px;height:22px;border-width:2.5px"></span>
+            <div class="h4">「{{ activeRunNote?.title }}」生成中</div>
+            <p class="text-sm">这份材料在队列中靠后，正在按顺序处理，完成后会自动显示在这里</p>
+          </div>
+          <div v-else-if="showRunSwitch && runFailed" class="note-empty run-wait">
+            <div class="note-empty-icon"><AppIcon name="alert" :size="24" /></div>
+            <div class="h4">这份材料生成失败</div>
+            <p class="text-sm">{{ activeRunNote?.failReason || '处理未成功，可重新上传该材料再试' }}</p>
           </div>
 
           <!-- 纪要内容 -->
@@ -1269,7 +1429,9 @@ onBeforeUnmount(() => {
 .fl-clear:hover:not(:disabled) { background: #fdecec; color: var(--error); }
 .fl-clear:disabled { opacity: 0.45; cursor: not-allowed; }
 .file-list {
-  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
+  display: flex; gap: 8px; overflow-x: auto;
+  /* 滚动容器会裁掉选中卡片的上浮 / 脉冲环 / 流光，用内边距留出渲染空间，负外边距抵消保持视觉位置 */
+  padding: 10px 14px 14px; margin: -10px -14px -14px;
   scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent;
 }
 .file-list::-webkit-scrollbar { height: 8px; }
@@ -1424,6 +1586,46 @@ onBeforeUnmount(() => {
 
 .gen-actions { display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid var(--hairline-soft); flex-wrap: wrap; }
 .gen-hint { font-size: 12px; color: var(--stone); }
+
+/* 批量纪要切换条：左右箭头 + 状态点 pills */
+.run-switch {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; margin-bottom: 12px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.rs-arrow {
+  width: 28px; height: 28px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--slate); background: var(--canvas);
+  border: 1px solid var(--hairline-strong); border-radius: 50%;
+  cursor: pointer; transition: all 0.15s ease;
+}
+.rs-arrow:hover:not(:disabled) { color: var(--primary); border-color: var(--primary); background: var(--tint-lavender); }
+.rs-arrow:disabled { opacity: 0.4; cursor: not-allowed; }
+.rs-pills { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.rs-pills::-webkit-scrollbar { display: none; }
+.rs-pill {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  max-width: 200px; padding: 5px 10px;
+  font-family: inherit; font-size: 12.5px; color: var(--slate);
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 999px; cursor: pointer; transition: all 0.15s ease;
+}
+.rs-pill:hover { border-color: var(--primary); color: var(--ink); }
+.rs-pill.on {
+  color: var(--brand-purple-800); background: var(--tint-lavender);
+  border-color: var(--primary); font-weight: 600;
+}
+.rs-pill-title { min-width: 0; }
+.rs-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.rs-dot-done { background: var(--brand-green); }
+.rs-dot-processing { background: var(--brand-yellow); animation: rs-blink 1.1s ease-in-out infinite; }
+.rs-dot-failed { background: var(--error); }
+@keyframes rs-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.run-wait { gap: 12px; }
 
 /* 逐份设置表单：正在设置的材料名 + 主题历史回填下拉 */
 .assign-now { margin-top: 12px; position: relative; }

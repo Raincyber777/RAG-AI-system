@@ -12,14 +12,15 @@
  * - zip 压缩包：后端逐个解出内嵌文档（txt / md / pdf / docx / pptx / xlsx / csv）
  *   解析后合并生成纪要，嵌套压缩包与系统垃圾文件自动跳过
  */
-export type UploadKind = 'audio' | 'image' | 'video' | 'ppt' | 'doc'
+export type UploadKind = 'audio' | 'image' | 'video' | 'ppt' | 'doc' | 'zip'
 
 export const UPLOAD_EXTS: Record<UploadKind, string[]> = {
   audio: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'],
   image: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
   video: ['mp4', 'webm', 'mov', 'mkv'],
   ppt: ['pptx', 'ppsx'],
-  doc: ['pdf', 'docx', 'txt', 'md', 'xlsx', 'csv', 'zip'],
+  doc: ['pdf', 'docx', 'txt', 'md', 'xlsx', 'csv'],
+  zip: ['zip'],
 }
 
 /** 文件选择器的 accept 过滤（显式扩展名，避免 image/* 等宽过滤放进不支持的格式） */
@@ -41,6 +42,7 @@ export const UPLOAD_KIND_META: Record<UploadKind, { label: string; icon: string;
   video: { label: '视频', icon: 'film', tint: 'tint-rose' },
   ppt: { label: 'PPT', icon: 'layers', tint: 'tint-yellow-bold' },
   doc: { label: '文档', icon: 'file', tint: 'tint-peach' },
+  zip: { label: '压缩包', icon: 'folder', tint: 'tint-sky' },
 }
 
 /** 各类型单文件大小上限（MB），与后端校验一致：
@@ -51,6 +53,7 @@ export const UPLOAD_MAX_MB: Record<UploadKind, number> = {
   video: 1024,
   ppt: 100,
   doc: 100,
+  zip: 100,
 }
 
 /** 按扩展名识别格式类别；不在支持列表内返回 null（扩展名即规则，与 accept 完全一致） */
@@ -60,6 +63,7 @@ export function detectUploadKind(name: string): UploadKind | null {
   if (UPLOAD_EXTS.audio.includes(ext)) return 'audio'
   if (UPLOAD_EXTS.image.includes(ext)) return 'image'
   if (UPLOAD_EXTS.video.includes(ext)) return 'video'
+  if (UPLOAD_EXTS.zip.includes(ext)) return 'zip'
   if (UPLOAD_EXTS.doc.includes(ext)) return 'doc'
   return null
 }
