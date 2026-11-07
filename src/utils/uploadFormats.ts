@@ -56,6 +56,13 @@ export const UPLOAD_MAX_MB: Record<UploadKind, number> = {
   zip: 100,
 }
 
+/** zip / 文件夹内会被真正解析的文档扩展名（对齐后端 notes/services.py 的 ZIP_DOC_EXTS），
+ * 打包文件夹时只收这些格式，其余文件（音视频 / 图片 / 可执行等）不参与合并生成 */
+export const ZIP_DOC_EXTS = ['txt', 'md', 'markdown', 'pdf', 'docx', 'pptx', 'ppsx', 'xlsx', 'csv']
+
+/** zip 内单文件解压上限（对齐后端 ZIP_INNER_MAX） */
+export const ZIP_INNER_MAX_MB = 20
+
 /** 按扩展名识别格式类别；不在支持列表内返回 null（扩展名即规则，与 accept 完全一致） */
 export function detectUploadKind(name: string): UploadKind | null {
   const ext = (name.split('.').pop() || '').toLowerCase()

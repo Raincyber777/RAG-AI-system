@@ -22,6 +22,8 @@ import {
   UPLOAD_EXTS,
   UPLOAD_KIND_META,
   UPLOAD_MAX_MB,
+  ZIP_DOC_EXTS,
+  ZIP_INNER_MAX_MB,
   detectUploadKind,
   uploadAcceptAttr,
   formatFileSize,
@@ -40,6 +42,7 @@ interface InputFile {
   size: string
   preview?: string
   file?: File // 原始文件（创建纪要时随表单提交给后端）
+  folderCount?: number // 文件夹打包的材料：内含可解析文档份数（卡片显示「文件夹 · N 份文档」）
   theme?: string // 该材料的课堂主题（点选卡片后在下方表单填写）
   course?: string // 该材料的所属课程
 }
@@ -213,33 +216,104 @@ function onFileChange(e: Event) {
   handleFiles((e.target as HTMLInputElement).files)
   ;(e.target as HTMLInputElement).value = ''
 }
-// 文件夹选择器：webkitdirectory 让选中的是整个文件夹（目录内全部文件逐个交给 handleFiles 校验）
+// ---------- 文件夹上传：整个文件夹打包为 1 个材料（前端压成 zip，后端解出内嵌文档合并生成一份纪要） ----------
 const dirInput = ref<HTMLInputElement>()
 function pickFolder() {
   if (genState.value === 'running' || genState.value === 'streaming') return
-  dirInput.value?.click()
+  const el = dirInput.value
+  if (!el) return
+  // webkitdirectory 非标准属性：点击前兜底设置一次，保证弹出的必定是文件夹选择框
+  el.setAttribute('webkitdirectory', '')
+  el.setAttribute('directory', '')
+  el.click()
 }
+/** 选择器拿到的是文件夹内全部文件的平铺列表：按顶层文件夹分组（一般只有一组），每组打包一张卡片 */
 function onDirChange(e: Event) {
-  handleFiles((e.target as HTMLInputElement).files)
-  ;(e.target as HTMLInputElement).value = ''
+  const input = e.target as HTMLInputElement
+  const list = input.files
+  if (!list || !list.length) return
+  const groups = new Map<string, { file: File; path?: string }[]>()
+  for (const f of Array.from(list)) {
+    const top = f.webkitRelativePath ? f.webkitRelativePath.split('/')[0] : f.name
+    const arr = groups.get(top) || []
+    arr.push({ file: f, path: f.webkitRelativePath || undefined })
+    groups.set(top, arr)
+  }
+  // 注意：必须先取走 File 引用再清 value——对 file input 设 value='' 会连带清空 files（live FileList）
+  input.value = ''
+  for (const [name, items] of groups) void addFolderCard(name, items)
 }
+/** 文件夹 → zip 材料：只收后端可解析的文档格式（ZIP_DOC_EXTS），垃圾文件 / 超限文件跳过并计数 */
+async function addFolderCard(folderName: string, items: { file: File; path?: string }[]) {
+  if (inputFiles.value.length >= MAX_FILES) {
+    flashZoneTip(`最多同时上传 ${MAX_FILES} 个材料，文件夹未添加`)
+    return
+  }
+  if (inputFiles.value.some((x) => x.name === folderName && x.kind === 'zip')) {
+    flashZoneTip(`文件夹「${folderName}」已在清单中`)
+    return
+  }
+  const JSZip = (await import('jszip')).default
+  const zip = new JSZip()
+  let docCount = 0
+  let skipped = 0
+  for (const it of items) {
+    const f = it.file
+    if (f.name.startsWith('~$') || f.name.startsWith('.') || ['thumbs.db', 'desktop.ini'].includes(f.name.toLowerCase())) continue
+    const ext = (f.name.split('.').pop() || '').toLowerCase()
+    if (!ZIP_DOC_EXTS.includes(ext)) {
+      skipped++
+      continue
+    }
+    if (f.size > ZIP_INNER_MAX_MB * 1024 * 1024) {
+      skipped++
+      continue
+    }
+    zip.file(it.path || folderName + '/' + f.name, f)
+    docCount++
+  }
+  if (!docCount) {
+    flashZoneTip(`「${folderName}」里没有可解析的文档（支持 ${ZIP_DOC_EXTS.join(' / ')}），未添加`)
+    return
+  }
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+  if (blob.size > UPLOAD_MAX_MB.zip * 1024 * 1024) {
+    flashZoneTip(`「${folderName}」打包后超过 ${UPLOAD_MAX_MB.zip}MB，请拆分后再上传`)
+    return
+  }
+  const item: InputFile = {
+    id: 'f' + Date.now() + Math.random().toString(36).slice(2, 5),
+    name: folderName,
+    kind: 'zip',
+    size: formatFileSize(blob.size),
+    file: new File([blob], folderName + '.zip', { type: 'application/zip' }),
+    folderCount: docCount,
+  }
+  inputFiles.value.push(item)
+  selectedFile.value = item // 与普通材料一致：自动选中，等待逐份设置主题 / 课程
+  flashZoneTip(`已把文件夹「${folderName}」打包为 1 个材料（含 ${docCount} 份文档${skipped ? `，跳过 ${skipped} 个不参与的文件` : ''}），将合并生成一份纪要`)
+}
+
 function entryFile(entry: FileSystemFileEntry): Promise<File | null> {
   return new Promise((res) => entry.file(res, () => res(null)))
 }
-/** 递归读取拖入的文件夹：readEntries 每次最多返回 100 条，需循环读空；最多收集 MAX_FILES 个 */
-async function collectEntryFiles(entry: FileSystemEntry, out: File[]): Promise<void> {
-  if (out.length >= MAX_FILES) return
+/** 递归读取拖入的文件夹（保留相对路径）：readEntries 每次最多返回 100 条，需循环读空 */
+interface DirFile {
+  file: File
+  path: string
+}
+async function collectEntryFiles(entry: FileSystemEntry, prefix: string, out: DirFile[]): Promise<void> {
+  if (out.length >= 400) return // 软上限：防误拖整个磁盘时无限遍历
   if (entry.isFile) {
     const f = await entryFile(entry as FileSystemFileEntry)
-    if (f) out.push(f)
+    if (f) out.push({ file: f, path: prefix + f.name })
     return
   }
   const reader = (entry as FileSystemDirectoryEntry).createReader()
   for (;;) {
     const batch = await new Promise<FileSystemEntry[]>((res) => reader.readEntries((es) => res(es), () => res([])))
     if (!batch.length) break
-    for (const e of batch) await collectEntryFiles(e, out)
-    if (out.length >= MAX_FILES) return
+    for (const e of batch) await collectEntryFiles(e, prefix + entry.name + '/', out)
   }
 }
 async function onDrop(e: DragEvent) {
@@ -249,15 +323,19 @@ async function onDrop(e: DragEvent) {
     .map((it) => it.webkitGetAsEntry?.())
     .filter((en): en is FileSystemEntry => !!en)
   if (entries.some((en) => en.isDirectory)) {
-    const files: File[] = []
+    const loose: File[] = []
     for (const en of entries) {
-      if (en.isDirectory) await collectEntryFiles(en, files)
-      else {
+      if (en.isDirectory) {
+        // 拖入的每个文件夹各自打包为 1 个材料
+        const files: DirFile[] = []
+        await collectEntryFiles(en, '', files)
+        void addFolderCard(en.name, files)
+      } else {
         const f = await entryFile(en as FileSystemFileEntry)
-        if (f) files.push(f)
+        if (f) loose.push(f)
       }
     }
-    handleFiles(files)
+    if (loose.length) handleFiles(loose)
     return
   }
   handleFiles(e.dataTransfer?.files)
@@ -947,11 +1025,11 @@ onBeforeUnmount(() => {
             @drop.prevent="onDrop"
           >
             <div class="upload-icon"><AppIcon name="upload" :size="24" /></div>
-            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFiles" @keydown.enter.stop.prevent="pickFiles">点击上传</span> / <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFolder" @keydown.enter.stop.prevent="pickFolder">上传文件夹</span>（可多选 / 整个文件夹拖入）</div>
+            <div v-if="inputFiles.length < MAX_FILES" class="upload-text">拖拽材料到此处，或 <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFiles" @keydown.enter.stop.prevent="pickFiles">点击上传</span> / <span class="link-text" role="button" tabindex="0" @click.stop.prevent="pickFolder" @keydown.enter.stop.prevent="pickFolder">上传文件夹</span>（整个文件夹按 1 个材料上传，内含文档合并生成一份纪要）</div>
             <div v-else class="upload-text">已达 {{ MAX_FILES }} 个材料上限，可先移除部分再上传</div>
             <!-- 多文件上传提示徽章：呼吸光晕突出「可批量」，空态与未满时展示 -->
             <div v-if="inputFiles.length < MAX_FILES" class="multi-badge">
-              <AppIcon name="layers" :size="13" /> 支持批量：多选 / 文件夹 / zip 压缩包，按队列顺序依次生成（最多 {{ MAX_FILES }} 个材料）
+              <AppIcon name="layers" :size="13" /> 支持批量：多选 / 文件夹 / zip 压缩包（文件夹与 zip 内多份文档合并成一份纪要），按队列顺序依次生成（最多 {{ MAX_FILES }} 个材料）
             </div>
             <div class="kind-hints">
               <span class="kind-hint"><AppIcon name="headphones" :size="13" /> 音频 mp3 / wav / m4a 等</span>
@@ -959,7 +1037,7 @@ onBeforeUnmount(() => {
               <span class="kind-hint"><AppIcon name="film" :size="13" /> 视频 mp4 / mov / mkv 等</span>
               <span class="kind-hint"><AppIcon name="layers" :size="13" /> PPT ppt / pptx</span>
               <span class="kind-hint"><AppIcon name="file" :size="13" /> 文档 pdf / word / excel 等</span>
-              <span class="kind-hint"><AppIcon name="folder" :size="13" /> 压缩包 zip（解出多个文档合并成一份纪要）</span>
+              <span class="kind-hint"><AppIcon name="folder" :size="13" /> 文件夹 / zip 压缩包（多份文档合并成一份纪要）</span>
             </div>
             <input ref="fileInput" type="file" multiple hidden :accept="uploadAcceptAttr" @change="onFileChange" />
             <input ref="dirInput" type="file" multiple hidden @change="onDirChange" />
@@ -1010,7 +1088,7 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <div class="file-name ellipsis" :title="f.name">{{ f.name }}</div>
-                <div class="file-meta">{{ KIND_META[f.kind].label }} · {{ f.size }}</div>
+                <div class="file-meta">{{ f.folderCount ? `文件夹 · ${f.folderCount} 份文档` : KIND_META[f.kind].label }} · {{ f.size }}</div>
                 <div v-if="f.theme || f.course" class="file-assign ellipsis" :title="[f.theme, f.course].filter(Boolean).join(' · ')">
                   {{ [f.theme, f.course].filter(Boolean).join(' · ') }}
                 </div>
