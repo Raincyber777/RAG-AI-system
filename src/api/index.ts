@@ -135,6 +135,17 @@ export interface ApiQaRecord {
 /** 按消息的反馈埋点动作（点赞 / 点踩 / 复制 / 重新提问 / 停留时长） */
 export type QaFeedbackAction = 'like' | 'dislike' | 'copy' | 'reask' | 'dwell'
 
+/** 后端对话目录（QaSession）：课内提问以纪要 id 作为 ref 去重，question_count=真实提问数 */
+export interface ApiQaSession {
+  ref: string
+  title: string
+  note: number | null
+  pinned: boolean
+  question_count: number
+  created_at: string
+  updated_at: string
+}
+
 export const qaApi = {
   /** 我的问答历史：课内会话按纪要（note）过滤；自由对话按会话标识（session_ref）过滤 */
   list: (noteId?: string, sessionRef?: string) => {
@@ -167,6 +178,13 @@ export const qaApi = {
     }),
   /** 欢迎页个性化追问建议（按用户近期提问生成，失败由页面回退默认文案） */
   suggestions: () => request<{ suggestions: string[] }>('/qa/suggestions/'),
+  /** 对话目录：课内对话按纪要去重（note=纪要 id，question_count>0 才真的发生过问答） */
+  sessions: () => listAll<ApiQaSession>('/qa/sessions/', { page_size: '50' }),
+  /** 课内对话的置顶 / 重命名持久化（自由对话存 localStorage，无需此接口） */
+  updateSession: (ref: string, data: { title?: string; pinned?: boolean }) =>
+    request<ApiQaSession>(`/qa/sessions/${ref}/`, { method: 'PATCH', data }),
+  /** 删除课内对话：后端连同该纪要的问答记录一起清（与自由对话删除语义一致） */
+  deleteSession: (ref: string) => request<void>(`/qa/sessions/${ref}/`, { method: 'DELETE' }),
 }
 
 /**
@@ -402,7 +420,8 @@ export interface PersonalStats {
 }
 
 export const statsApi = {
-  summary: () => request<PersonalStats>('/stats/summary/'),
+  /** 用户端看板只看「本人的学习数据」，与角色无关：固定 personal 口径（管理员不传参仍是平台口径，供管理端速览） */
+  summary: () => request<PersonalStats>('/stats/summary/?scope=personal'),
 }
 
 // ---------- 公告与协议 ----------

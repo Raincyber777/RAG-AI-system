@@ -7,11 +7,11 @@
  * 回答为前端演示，接入真实模型后仅需替换 runStages / startStream 中的回调；
  * 流式任务按会话登记（askTasks）：切换对话不打断后台回答，答完落在原会话
  */
-import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount, onDeactivated } from 'vue'
+import { ref, reactive, nextTick, computed, watch, onMounted, onBeforeUnmount, onDeactivated, onActivated } from 'vue'
 
 // 组件名固定：AppLayout 的 keep-alive include 依赖它，路由切走再回来保持对话现场
 defineOptions({ name: 'QAPage' })
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import SparkMark from '@/components/SparkMark.vue'
 import { classNotes, ensureNotesLoaded } from '@/store/study'
@@ -23,6 +23,7 @@ import { demoReply, type ChatMessage, type ChatAttachment, type Citation } from 
 import { UPLOAD_ACCEPT, UPLOAD_KIND_META, UPLOAD_MAX_MB, detectUploadKind, formatFileSize, type UploadKind } from '@/utils/uploadFormats'
 
 const route = useRoute()
+const router = useRouter()
 
 // ---------- 对话列表（可关联课堂，也可自由追问） ----------
 interface QaSession {
@@ -33,11 +34,7 @@ interface QaSession {
   pinnedAt?: number
 }
 
-const qaSessions = ref<QaSession[]>(
-  classNotes.value
-    .filter((n) => n.status === 'done')
-    .map((n) => ({ id: n.id, title: n.title, noteId: n.id }))
-)
+const qaSessions = ref<QaSession[]>([])
 const sessionSearch = ref('')
 const activeSessionId = ref('')
 // 会话面板可横向收起 / 展开；折叠状态持久化，跳转其他页面再回来保持上次的开合
@@ -69,15 +66,11 @@ watch(activeSessionId, (v) => {
   localStorage.setItem(`zy_qa_active:${uidKey()}`, v || '')
 })
 
-// 工作台新完成的纪要 → 自动出现为一条对话
+// 纪要被删除 → 对应课内对话条目同步移除（重新生成等状态变化不动条目，问答记录仍在）
 watch(
-  () => classNotes.value.map((n) => n.id + ':' + n.status).join('|'),
+  () => classNotes.value.map((n) => n.id).join('|'),
   () => {
-    for (const n of classNotes.value) {
-      if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
-        qaSessions.value.push({ id: n.id, title: n.title, noteId: n.id })
-      }
-    }
+    qaSessions.value = qaSessions.value.filter((s) => !s.noteId || classNotes.value.some((n) => n.id === s.noteId))
   }
 )
 
@@ -100,23 +93,51 @@ function groupOf(s: QaSession): '今天' | '昨天' | '更早' {
   return '更早'
 }
 
-// 分组：置顶组在最上（后置顶的排在先置顶的前面），其余按 今天 / 昨天 / 更早
+// 分组：置顶组在最上（后置顶的排在先置顶的前面），其余按 今天 / 昨天 / 更早。
+// 课内对话条目标题实时派生（优先纪要标题）：条目可能在纪要列表加载完成前创建，
+// 创建时冻结的兜底标题在这里自愈（reactive 依赖 classNotes，加载完成后重算）
 const sessionGroups = computed(() => {
   const q = sessionSearch.value.trim()
-  const match = (s: QaSession) => s.title.includes(q)
+  const match = (s: QaSession) => (s.noteId ? noteSessionTitle(s.noteId, s.title) : s.title).includes(q)
   const groups: { label: string; items: QaSession[] }[] = []
   const pinned = qaSessions.value
     .filter((s) => s.pinned && match(s))
     .sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0))
   if (pinned.length) groups.push({ label: '置顶', items: pinned })
   for (const g of ['今天', '昨天', '更早'] as const) {
-    const items = qaSessions.value.filter((s) => !s.pinned && match(s) && groupOf(s) === g)
+    const items = qaSessions.value
+      .filter((s) => !s.pinned && match(s) && groupOf(s) === g)
+      .map((s) => (s.noteId ? { ...s, title: noteSessionTitle(s.noteId, s.title) } : s))
     if (items.length) groups.push({ label: g, items })
   }
   return groups
 })
 
 // ---------- 会话管理：新增 / 置顶 / 重命名 / 删除 ----------
+/** 课内对话条目标题：优先纪要标题（更可读），纪要尚未加载时用后端会话标题兜底 */
+function noteSessionTitle(noteId: string, fallback: string): string {
+  return classNotes.value.find((n) => n.id === noteId)?.title || fallback
+}
+
+function ensureNoteSession(noteId: string, fallbackTitle = '课内对话') {
+  if (!noteId || qaSessions.value.some((s) => s.id === noteId)) return
+  qaSessions.value.push({ id: noteId, title: noteSessionTitle(noteId, fallbackTitle), noteId })
+}
+
+/** 从后端对话目录补齐课内对话条目：只展示 question_count>0 的（真的发生过问答）。
+ * 生成新纪要不再自动出现对话（2026-11-09 反馈）；失败静默（下次进入重试）。
+ * 已有条目不覆盖标题，保留用户重命名。 */
+async function syncNoteSessions() {
+  if (isGuest.value) return
+  try {
+    for (const s of await qaApi.sessions()) {
+      if (s.note && s.question_count > 0 && !qaSessions.value.some((x) => x.id === String(s.note))) {
+        qaSessions.value.push({ id: String(s.note), title: noteSessionTitle(String(s.note), s.title), noteId: String(s.note) })
+      }
+    }
+  } catch { /* 目录拉取失败不阻塞页面 */ }
+}
+
 function createSession() {
   const s: QaSession = { id: 'qa' + Date.now(), title: '新的对话' }
   qaSessions.value.unshift(s)
@@ -132,6 +153,7 @@ function togglePin(s: QaSession) {
     s.pinned = true
     s.pinnedAt = Date.now()
   }
+  if (s.noteId) void qaApi.updateSession(s.noteId, { pinned: s.pinned }).catch(() => {}) // 课内对话置顶落库
 }
 
 // 行内重命名
@@ -150,7 +172,10 @@ function startRename(s: QaSession) {
 function commitRename() {
   const s = qaSessions.value.find((x) => x.id === editId.value)
   const t = editTitle.value.trim()
-  if (s && t) s.title = t
+  if (s && t) {
+    s.title = t
+    if (s.noteId) void qaApi.updateSession(s.noteId, { title: t }).catch(() => {}) // 课内对话重命名落库
+  }
   editId.value = null
 }
 function cancelRename() {
@@ -165,6 +190,12 @@ function removeSession(s: QaSession) {
   loadedSessions.delete(s.id)
   const task = askTasks.get(s.id)
   if (task) stopTask(task) // 被删会话的回答没有存在意义：断开并清场
+  // 课内对话删除落库（后端连同该纪要的问答记录一起清），否则下次进入会从目录里回来
+  if (s.noteId) {
+    void qaApi.deleteSession(s.noteId).catch(() => {})
+    // 删的是 URL ?note= 直达目标时清掉参数，否则刷新会被 onMounted 的直达兜底原样建回
+    if (route.query.note === s.noteId) void router.replace({ query: { ...route.query, note: undefined } })
+  }
   if (activeSessionId.value === s.id) {
     const first = qaSessions.value[0]
     if (first) {
@@ -195,7 +226,11 @@ const activeMessages = computed<ChatMessage[]>(() =>
   activeSessionId.value ? (messageStore[activeSessionId.value] ?? []) : []
 )
 
-const activeSession = computed(() => qaSessions.value.find((s) => s.id === activeSessionId.value))
+const activeSession = computed(() => {
+  const s = qaSessions.value.find((x) => x.id === activeSessionId.value)
+  // 课内对话标题实时派生（同 sessionGroups，兜底标题在纪要加载后自愈）
+  return s?.noteId ? { ...s, title: noteSessionTitle(s.noteId, s.title) } : s
+})
 const activeNote = computed(() =>
   activeSession.value?.noteId ? classNotes.value.find((n) => n.id === activeSession.value?.noteId) : undefined
 )
@@ -709,6 +744,8 @@ function send() {
  * 任务按会话登记（askTasks）：切换对话不打断，回答在原会话照常走完 */
 function askQuestion(text: string, images?: File[], docs?: File[]) {
   const sid = activeSessionId.value || ''
+  // 纯数字会话 id = 纪要 id：条目缺失时先补再提问，否则课内提问会掉进自由对话
+  if (sid && /^\d+$/.test(sid)) ensureNoteSession(sid)
   // 任务本身建成 reactive：askTasks 存的是代理，raw 对象的属性变更不会触发
   // isTyping/isStreaming 等 computed，且 get() 取回的对象必须与闭包里的 t 同一（身份判定删任务）
   const t = reactive({
@@ -1045,23 +1082,37 @@ onMounted(async () => {
       })
       .catch(() => {})
   }
-  // 恢复本地持久化的自由对话会话（课内会话由纪要自动重建，不落盘）
+  // 恢复本地持久化的自由对话会话（课内会话条目来自后端对话目录，不落盘）
   const restored = loadFreeSessions()
   if (restored.length) qaSessions.value = [...restored, ...qaSessions.value]
-  // note 对话按最新纪要列表补齐（watch 为异步触发，这里先行补齐一次）
-  for (const n of classNotes.value) {
-    if (n.status === 'done' && !qaSessions.value.some((s) => s.id === n.id)) {
-      qaSessions.value.push({ id: n.id, title: n.title, noteId: n.id })
-    }
-  }
+  // 课内对话只补「真的发生过问答」的纪要（后端 question_count>0），生成新纪要不再自动多一条对话
+  await syncNoteSessions()
   const q = route.query.note
   const id = typeof q === 'string' ? q : ''
+  // 工作台「智能问答」直达：条目还没有也必须先补上，否则该提问会掉进自由对话
+  if (id) ensureNoteSession(id)
   const savedActive = localStorage.getItem(`zy_qa_active:${uidKey()}`) || ''
   const exists = qaSessions.value.some((s) => s.id === id)
   activeSessionId.value = exists
     ? id
     : (qaSessions.value.some((x) => x.id === savedActive) ? savedActive : (qaSessions.value[0]?.id ?? ''))
   if (activeSessionId.value) void loadHistory(activeSessionId.value)
+  nextTick(() => scrollToBottom(true))
+})
+
+// keep-alive 重复激活（组件已挂载时从工作台点「智能问答」直达）：处理 ?note= 切会话。
+// 注意 onActivated 首次挂载也会触发且不等 onMounted 的 await——必须先等纪要加载完，
+// 否则条目会在 classNotes 为空时创建、标题冻结成兜底文案
+onActivated(async () => {
+  const q = route.query.note
+  const id = typeof q === 'string' ? q : ''
+  if (!id || !/^\d+$/.test(id)) return
+  await ensureNotesLoaded()
+  ensureNoteSession(id)
+  if (activeSessionId.value === id) return
+  activeSessionId.value = id
+  messagesFor(id)
+  void loadHistory(id)
   nextTick(() => scrollToBottom(true))
 })
 
