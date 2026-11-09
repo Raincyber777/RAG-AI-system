@@ -5,7 +5,7 @@
  * 右：结构化纪要流式渲染（主题逐字 → 其余章节逐条浮现）+ 引用溯源卡片
  * 处理流程为前端演示（定时器模拟），接入真实模型后仅需替换 runSteps / startStreaming 中的回调
  */
-import { ref, reactive, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 // 组件名固定：AppLayout 的 keep-alive include 依赖它，路由切走再回来保持生成现场
@@ -13,11 +13,13 @@ defineOptions({ name: 'StudioPage' })
 import AppIcon from '@/components/AppIcon.vue'
 import AppSelect from '@/components/AppSelect.vue'
 import { addClassNote, findNote, updateNote, removeClassNote, courseList, addCourse, classNotes, removeCourse, renameCourse, ensureNotesLoaded, noteFromApi } from '@/store/study'
+import { currentUser } from '@/store/auth'
 import { notesApi, type ApiNote } from '@/api'
 import { ApiError } from '@/api/http'
 import { wrongBook } from '@/store/quiz'
 import type { ClassNote } from '@/mock/data'
 import { buildNoteMarkdown, downloadText } from '@/utils/exportNote'
+import { saveQueue, loadQueue, saveRun, loadRun, type PersistRunItem } from '@/utils/studioStore'
 import {
   UPLOAD_EXTS,
   UPLOAD_KIND_META,
@@ -553,6 +555,10 @@ function syncRunNote(n: ApiNote) {
   if (!item) return
   item.status = n.status
   item.failReason = n.fail_reason
+  // 停止 / 刷新恢复后全部收敛完成：切回完成态，导出与追问按钮随之恢复
+  if (runNotes.value.length && runNotes.value.every((x) => x.status === 'done') && genState.value === 'stopped') {
+    genState.value = 'done'
+  }
   if (n.status !== 'processing' && activeRunIdx.value === runNotes.value.indexOf(item)) {
     if (n.status === 'done') showRunNote(activeRunIdx.value)
   }
@@ -615,9 +621,9 @@ function clearAllTimers() {
 }
 
 /** 后台轮询生成中的材料：done / failed 都同步进 store，全部收敛后停止。
- * 可重复调用追加材料（主材料轮询超时转入后台时复用），已启动的定时器不受影响 */
+ * 可重复调用追加材料（主材料轮询超时转入后台时复用 / 刷新恢复现场续轮询），已启动的定时器不受影响 */
 const extrasPendingIds = new Set<string>()
-function pollExtras(list: ApiNote[]) {
+function pollExtras(list: { id: string }[]) {
   for (const n of list) extrasPendingIds.add(String(n.id))
   extrasPending.value = extrasPendingIds.size
   if (extrasTimer) return // 已在轮询：追加跟踪即可，不重置计数
@@ -798,6 +804,10 @@ async function confirmDiscard() {
 
 async function startGenerate() {
   if (!canStart.value) return
+  // 上一轮仍处理中的份（停止前遗留 / 刷新恢复的现场）被新一轮替代：先取消释放串行流水线
+  for (const r of runNotes.value) {
+    if (r.status === 'processing') cancelRunItem(r)
+  }
   // 清除可能残留的回看 query：生成新纪要后从其他页面返回时应保持新现场，而非误切回看旧纪要
   if (route.query.note) router.replace({ path: '/studio' })
   clearAllTimers()
@@ -992,12 +1002,66 @@ async function showNoteFromQuery(id: string | null) {
   steps.value = steps.value.map((s) => ({ ...s, status: 'done' as StepStatus, dur: '2.0s' }))
 }
 
+// ---------- 刷新不丢现场：上传队列（IndexedDB 存文件本体）+ 本次生成清单（localStorage） ----------
+const persistUid = computed(() => currentUser.value?.id ?? null)
+
+// 队列任意变化（增删 / 逐份主题课程编辑）防抖落盘；File 本体可结构化克隆进 IndexedDB
+let queueSaveTimer: number | undefined
+watch(
+  inputFiles,
+  (files) => {
+    const uid = persistUid.value
+    if (uid == null) return
+    if (queueSaveTimer) window.clearTimeout(queueSaveTimer)
+    queueSaveTimer = window.setTimeout(() => void saveQueue(uid, files), 400)
+  },
+  { deep: true },
+)
+
+// 生成清单快照：刷新后恢复切换条与各份状态（运行中刷新 → 以 stopped 态续看并恢复轮询）
+watch(
+  [runNotes, genState, activeRunIdx],
+  ([items, state, idx]) => {
+    const uid = persistUid.value
+    if (uid == null) return
+    if (state === 'idle' || !items.length) saveRun(uid, [], 0)
+    else saveRun(uid, items, idx)
+  },
+  { deep: true },
+)
+
+/** 恢复刷新前的现场：先队列后生成清单；带 ?note= 回看参数时以显式回看为准 */
+async function restoreSession() {
+  const uid = persistUid.value
+  if (uid == null) return
+  const files = await loadQueue(uid)
+  if (files.length) {
+    inputFiles.value = files.map((f) => ({
+      ...f,
+      kind: f.kind as FileKind,
+      preview: f.kind === 'image' && f.file ? URL.createObjectURL(f.file) : undefined,
+    }))
+    selectedFile.value = inputFiles.value[0] ?? null
+  }
+  if (route.query.note) return
+  const run = loadRun(uid)
+  if (!run || !run.items.length) return
+  runNotes.value = run.items
+  activeRunIdx.value = Math.min(Math.max(run.activeIdx, 0), run.items.length - 1)
+  const processing = run.items.filter((x) => x.status === 'processing')
+  genState.value = processing.length ? 'stopped' : 'done'
+  if (processing.length) pollExtras(processing) // 刷新时仍在生成的份：续上后台补拉，完成后自动收敛
+  void showRunNote(activeRunIdx.value)
+}
+
 onMounted(() => {
   // webkitdirectory 非标准属性：用 setAttribute 兜底，避免模板属性的类型报错
   dirInput.value?.setAttribute('webkitdirectory', '')
   dirInput.value?.setAttribute('directory', '')
-  const id = route.query.note
-  void showNoteFromQuery(typeof id === 'string' ? id : null)
+  void restoreSession().then(() => {
+    const id = route.query.note
+    void showNoteFromQuery(typeof id === 'string' ? id : null)
+  })
 })
 
 // keep-alive 从其他页面返回：带 ?note= 回看参数时切换到目标纪要；
@@ -1249,7 +1313,11 @@ onBeforeUnmount(() => {
               </div>
             </li>
           </ol>
-          <p v-if="genState === 'stopped'" class="stopped-tip">已中断生成：未完成的材料已停止处理、不再占用后台队列，已完成的步骤会保留，可回到左侧重新开始。</p>
+          <p v-if="genState === 'stopped'" class="stopped-tip">
+            {{ runNotes.some((r) => r.status === 'processing')
+              ? '刷新未丢失进度：仍在后台生成的纪要完成后会自动更新到上面的切换条。'
+              : '已中断生成：未完成的材料已停止处理、不再占用后台队列，已完成的步骤会保留，可回到左侧重新开始。' }}
+          </p>
         </div>
         <div class="card note-panel">
           <div class="note-head">
