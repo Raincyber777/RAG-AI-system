@@ -97,6 +97,8 @@ export const notesApi = {
   detail: (id: string) => request<ApiNote>(`/notes/${id}/`),
   remove: (id: string) => request<void>(`/notes/${id}/`, { method: 'DELETE' }),
   reprocess: (id: string) => request<ApiNote>(`/notes/${id}/reprocess/`, { method: 'POST' }),
+  /** 停止生成：取消仍在处理中的纪要，释放串行流水线队列（下一轮生成不再排旧任务后面） */
+  cancel: (id: string) => request<ApiNote>(`/notes/${id}/cancel/`, { method: 'POST' }),
   renameCourse: (from: string, to: string) =>
     request<{ course: string; updated: number }>('/notes/course-rename/', {
       method: 'POST',

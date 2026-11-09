@@ -535,6 +535,7 @@ interface RunNoteItem {
   title: string
   status: 'done' | 'processing' | 'failed'
   failReason?: string
+  fileName?: string // 来源材料文件名：几份纪要主题相同时靠它区分
 }
 const runNotes = ref<RunNoteItem[]>([])
 const activeRunIdx = ref(0)
@@ -556,20 +557,36 @@ function syncRunNote(n: ApiNote) {
     if (n.status === 'done') showRunNote(activeRunIdx.value)
   }
 }
-/** 切到查看第 i 份：走回看态同一套渲染路径（全板块直出） */
-function showRunNote(i: number) {
+/** 切到查看第 i 份：store 有缓存直接渲染，否则拉详情（新建材料补拉只 patch 不插入 store，
+ * 依赖 findNote 会静默失败——面板停留在上一份内容上，看起来就像「几份纪要一模一样」） */
+let runShowToken = 0
+async function showRunNote(i: number) {
   const r = runNotes.value[i]
   if (!r) return
   activeRunIdx.value = i
   activeSource.value = null
   activeSection.value = ''
-  const cn = findNote(r.id)
-  if (!cn) return
-  note.value = cn
-  savedId.value = cn.id
-  themeShown.value = cn.theme
-  headersShown.value = ['points', 'definitions', 'emphasized']
-  for (const k of Object.keys(itemsShown)) itemsShown[k] = 999
+  if (r.status !== 'done') return // 生成中 / 已失败（含手动停止）：占位卡片说明
+  const render = (cn: ClassNote) => {
+    note.value = cn
+    savedId.value = cn.id
+    themeShown.value = cn.theme
+    headersShown.value = ['points', 'definitions', 'emphasized']
+    for (const k of Object.keys(itemsShown)) itemsShown[k] = 999
+  }
+  const cached = findNote(r.id)
+  if (cached) {
+    render(cached)
+    return
+  }
+  const token = ++runShowToken
+  try {
+    const n = await notesApi.detail(r.id)
+    if (token !== runShowToken || activeRunIdx.value !== i) return // 已切到别的份：丢弃过期响应
+    const cn = noteFromApi(n)
+    addClassNote(cn) // 补插进 store：我的纪要立即可见，下次切换走缓存
+    render(cn)
+  } catch { /* 详情拉取失败（一般仅网络异常）：保持当前内容 */ }
 }
 function switchRun(delta: number) {
   const next = activeRunIdx.value + delta
@@ -615,7 +632,10 @@ function pollExtras(list: ApiNote[]) {
     }
     for (const id of [...extrasPendingIds]) {
       void notesApi.detail(id).then((n) => {
-        updateNote(String(n.id), noteFromApi(n))
+        const cn = noteFromApi(n)
+        // updateNote 只 patch 不插入——本轮新建的材料 store 里还没有，必须补插，否则切换查看找不到
+        if (findNote(String(n.id))) updateNote(String(n.id), cn)
+        else addClassNote(cn)
         syncRunNote(n)
         if (n.status !== 'processing') extrasPendingIds.delete(String(n.id))
         extrasPending.value = extrasPendingIds.size
@@ -808,9 +828,14 @@ async function startGenerate() {
   let failedCount = 0
   let firstError: unknown = null
   for (const f of targets) {
-    if (genState.value !== 'running') return // 用户已停止
+    if (genState.value !== 'running') break // 用户已停止：剩余材料不再提交
     try {
-      okList.push(await notesApi.create({ course: effCourse(f), title: effTheme(f), duration: '' }, f.file))
+      const n = await notesApi.create({ course: effCourse(f), title: effTheme(f), duration: '' }, f.file)
+      okList.push(n)
+      // 逐份即时登记：中途停止时 runNotes 已含已提交的份，停止逻辑才能把它们全部取消
+      const item: RunNoteItem = { id: String(n.id), title: n.title, status: n.status, failReason: n.fail_reason, fileName: f.name }
+      runNotes.value.push(item)
+      if (genState.value !== 'running') cancelRunItem(item) // 提交间隙被停止：这份立即取消
     } catch (e) {
       failedCount++
       if (!firstError) firstError = e
@@ -824,7 +849,6 @@ async function startGenerate() {
     return
   }
   if (failedCount) genError.value = `${failedCount} 个材料提交失败，其余正在正常生成`
-  runNotes.value = okList.map((n) => ({ id: String(n.id), title: n.title, status: n.status, failReason: n.fail_reason }))
 
   // 第一个成功的材料作为主材料在右侧流式展示，其余交给后台补拉（「我的纪要」同步收敛）
   const [head, ...rest] = okList
@@ -870,12 +894,26 @@ async function startGenerate() {
   tryBeginStreaming()
 }
 
+/** 停止生成：取消单份仍在处理中的纪要——本地立即转为已停止态，后端释放串行流水线队列 */
+function cancelRunItem(r: RunNoteItem) {
+  r.status = 'failed'
+  r.failReason = '已手动停止生成'
+  extrasPendingIds.delete(r.id)
+  extrasPending.value = extrasPendingIds.size
+  void notesApi.cancel(r.id).catch(() => {}) // 尽力而为：网络失败时由 30 分钟兜底超时收敛
+}
+
 function stopGenerate() {
   clearAllTimers()
   const running = steps.value.find((s) => s.status === 'running')
   if (running) running.status = 'pending'
   genState.value = 'stopped'
   activeSection.value = ''
+  // 关键：把仍在排队 / 处理中的纪要同步取消——后端 worker 串行执行，
+  // 不取消的话下一轮生成会整轮排在旧任务后面，表现为卡住一直转很久
+  for (const r of runNotes.value) {
+    if (r.status === 'processing') cancelRunItem(r)
+  }
 }
 
 function resetAll() {
@@ -1211,7 +1249,7 @@ onBeforeUnmount(() => {
               </div>
             </li>
           </ol>
-          <p v-if="genState === 'stopped'" class="stopped-tip">已中断生成，已完成的步骤会保留，可回到左侧重新开始。</p>
+          <p v-if="genState === 'stopped'" class="stopped-tip">已中断生成：未完成的材料已停止处理、不再占用后台队列，已完成的步骤会保留，可回到左侧重新开始。</p>
         </div>
         <div class="card note-panel">
           <div class="note-head">
@@ -1246,10 +1284,11 @@ onBeforeUnmount(() => {
                 :key="r.id"
                 class="rs-pill"
                 :class="{ on: i === activeRunIdx }"
-                :title="r.title"
+                :title="r.fileName ? `${r.title} · 来源材料：${r.fileName}` : r.title"
                 @click="showRunNote(i)"
               >
                 <span class="rs-pill-title ellipsis">{{ r.title }}</span>
+                <span v-if="runNotes.length > 1 && r.fileName" class="rs-pill-file ellipsis">{{ r.fileName }}</span>
                 <span class="rs-dot" :class="'rs-dot-' + r.status" />
               </button>
             </div>
@@ -1684,7 +1723,7 @@ onBeforeUnmount(() => {
 .rs-pills::-webkit-scrollbar { display: none; }
 .rs-pill {
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
-  max-width: 200px; padding: 5px 10px;
+  max-width: 280px; padding: 5px 10px;
   font-family: inherit; font-size: 12.5px; color: var(--slate);
   background: var(--surface); border: 1px solid var(--hairline);
   border-radius: 999px; cursor: pointer; transition: all 0.15s ease;
@@ -1695,6 +1734,11 @@ onBeforeUnmount(() => {
   border-color: var(--primary); font-weight: 600;
 }
 .rs-pill-title { min-width: 0; }
+/* 来源材料名：几份纪要主题相同时靠它区分是哪份材料生成的 */
+.rs-pill-file {
+  min-width: 0; max-width: 110px; font-size: 10.5px; font-weight: 400;
+  color: var(--stone); opacity: 0.85;
+}
 .rs-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .rs-dot-done { background: var(--brand-green); }
 .rs-dot-processing { background: var(--brand-yellow); animation: rs-blink 1.1s ease-in-out infinite; }
