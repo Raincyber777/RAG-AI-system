@@ -1046,17 +1046,48 @@ function citeMarkText(c: Citation) {
 }
 
 // ---------- 建议 ----------
-// 通用推荐：无纪要账号 / 游客态 / 接口失败时使用——全部不依赖课堂资料，走联网通用问答
-const GENERAL_SUGGESTIONS = ['用通俗的话解释什么是机器学习', '帮我制定高数期末复习计划', '英语四级作文有哪些万能句型？', '什么是毕达哥拉斯定理？']
+// 通用推荐：无纪要账号 / 游客态 / 接口失败时使用——全部不依赖课堂资料，走联网通用问答。
+// 覆盖文/理/生活多方向的大池子，每个新对话随机抽 4 条，避免推荐千篇一律
+const GENERAL_SUGGESTIONS = [
+  '用通俗的话解释什么是机器学习', '帮我制定高数期末复习计划', '英语四级作文有哪些万能句型？', '什么是毕达哥拉斯定理？',
+  '光合作用和呼吸作用有什么区别？', '中国近代史从哪一年开始算？', '怎么快速背下圆周率前 30 位？', '篮球比赛里的挡拆是什么战术？',
+  '编写简历时最容易被忽略的细节？', '咖啡为什么能让人保持清醒？', '量子纠缠用生活例子怎么理解？', '怎么高效准备一场课堂展示？',
+]
+const NOTE_QUESTION_TEMPLATES = [
+  (t: string) => `「${t}」的重点是什么？`,
+  () => '这节课布置了什么作业？',
+  () => '把老师强调的考点整理一下',
+  () => '老师课上回答过哪些问题？',
+  (t: string) => `用大白话讲讲「${t}」讲了什么`,
+  () => '帮我出 5 道这节课的自测题',
+  () => '这节课有哪些容易混淆的概念？',
+  () => '把老师画的重点串成复习清单',
+]
 const hasNotes = computed(() => doneNotes.value.length > 0)
-// 个性化追问：登录后由后端按「近期提问」生成（后端未配模型 key 时为规则版），失败静默回退通用推荐
+// 个性化追问：登录后由后端按「近期提问」生成候选池（后端未配模型 key 时为规则版），失败静默回退通用推荐
 const personalized = ref<string[] | null>(null)
 const suggestions = computed(() => {
   const t = activeNote.value?.title
-  if (t) return [`「${t}」的重点是什么？`, '这节课布置了什么作业？', '把老师强调的考点整理一下', '老师课上回答过哪些问题？']
+  if (t) return NOTE_QUESTION_TEMPLATES.map((f) => f(t))
   if (!hasNotes.value) return GENERAL_SUGGESTIONS
   return personalized.value ?? GENERAL_SUGGESTIONS
 })
+// 每个新对话随机展示 4 条：进入空态 / 候选池变化时重新抽样（洗牌取前 4）
+const sugShown = ref<string[]>([])
+function resampleSuggestions() {
+  const arr = [...suggestions.value]
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const t = arr[i] ?? ''
+    arr[i] = arr[j] ?? ''
+    arr[j] = t
+  }
+  sugShown.value = arr.slice(0, 4)
+}
+const shownSuggestions = computed(() => (sugShown.value.length ? sugShown.value : suggestions.value.slice(0, 4)))
+watch(suggestions, () => { if (!activeMessages.value.length) resampleSuggestions() })
+watch(() => activeMessages.value.length === 0, (isEmpty) => { if (isEmpty) resampleSuggestions() })
+resampleSuggestions()
 
 function suggestionClick(q: string) {
   input.value = q
@@ -1229,7 +1260,7 @@ onDeactivated(() => {
             <h2 class="h2">{{ hasNotes ? '针对课堂内容，想问点什么？' : '有问题，尽管问' }}</h2>
             <p class="text-md muted">{{ hasNotes ? '回答基于课堂纪要、转写稿与板书生成，每句话都能溯源到录音时间点或图片。' : '还没上传课堂资料也没关系：回答结合全网资料生成，并标注来源与依据。' }}</p>
             <div class="sug-grid">
-              <button v-for="q in suggestions" :key="q" class="sug-card" @click="suggestionClick(q)">
+              <button v-for="q in shownSuggestions" :key="q" class="sug-card" @click="suggestionClick(q)">
                 <AppIcon name="chat" :size="15" />
                 {{ q }}
               </button>

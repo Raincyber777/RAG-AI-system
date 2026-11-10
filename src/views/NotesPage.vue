@@ -232,7 +232,7 @@ async function retryNote(n: ClassNote) {
                 <li v-for="(p, i) in viewTarget.points" :key="i" class="nm-item">
                   <span class="nm-bullet"></span>
                   <span class="flex-1">{{ p.text }}</span>
-                  <span v-if="p.cite" class="nm-cite"><AppIcon :name="p.cite.startsWith('录音') ? 'headphones' : 'image'" :size="12" /> {{ p.cite }}</span>
+                  <span v-if="p.cite && p.cite.startsWith('录音')" class="nm-cite"><AppIcon name="headphones" :size="12" /> {{ p.cite }}</span>
                 </li>
               </ul>
             </section>
@@ -244,7 +244,7 @@ async function retryNote(n: ClassNote) {
                     <div class="nm-def-term">{{ d.term }}</div>
                     <div class="nm-def-detail">
                       {{ d.detail }}
-                      <span v-if="d.cite" class="nm-cite"><AppIcon :name="d.cite.startsWith('录音') ? 'headphones' : 'image'" :size="12" /> {{ d.cite }}</span>
+                      <span v-if="d.cite && d.cite.startsWith('录音')" class="nm-cite"><AppIcon name="headphones" :size="12" /> {{ d.cite }}</span>
                     </div>
                   </div>
                 </li>

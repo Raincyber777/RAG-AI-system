@@ -1407,11 +1407,10 @@ onBeforeUnmount(() => {
                 <li v-for="(p, i) in note?.points || []" :key="i" v-show="i < shown('points')" class="n-item" :class="{ fresh: genState === 'streaming' }">
                   <span class="n-bullet"></span>
                   <span class="flex-1">{{ p.text }}</span>
-                  <!-- 录音引用可点击定位转写原文；板书 / PPT 引用仅作来源标注（弹窗无附加信息，已去掉） -->
+                  <!-- 录音引用可点击定位转写原文；板书 / PPT 引用无附加信息，不再展示 -->
                   <button v-if="p.cite.startsWith('录音')" class="cite-chip" :aria-label="'查看录音原文：' + p.cite" @click="showSource(p.cite)">
                     <AppIcon name="headphones" :size="12" /> {{ p.cite }}
                   </button>
-                  <span v-else-if="p.cite" class="cite-chip static"><AppIcon :name="citeIcon(p.cite)" :size="12" /> {{ p.cite }}</span>
                 </li>
               </ul>
 
@@ -1423,7 +1422,6 @@ onBeforeUnmount(() => {
                     <button v-if="d.cite && d.cite.startsWith('录音')" class="cite-chip" :aria-label="'查看录音原文：' + d.cite" @click="showSource(d.cite)">
                       <AppIcon name="headphones" :size="12" /> {{ d.cite }}
                     </button>
-                    <span v-else-if="d.cite" class="cite-chip static"><AppIcon :name="citeIcon(d.cite)" :size="12" /> {{ d.cite }}</span>
                   </div>
                 </li>
               </ul>
@@ -1903,7 +1901,6 @@ onBeforeUnmount(() => {
 }
 button.cite-chip { cursor: pointer; transition: all 0.15s ease; }
 button.cite-chip:hover { background: var(--primary); color: #fff; }
-.cite-chip.static { color: var(--steel); background: var(--surface); }
 
 /* 新浮现条目的入场动画 */
 .fresh { animation: item-in 0.35s ease both; }

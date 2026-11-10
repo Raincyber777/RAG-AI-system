@@ -9,17 +9,17 @@ import FaqModal from '@/components/FaqModal.vue'
 import { faqApi, tipsApi } from '@/api'
 
 const steps = [
-  { n: 1, title: '上传课堂材料', desc: '进入「课堂纪要」工作台，把课堂录音（mp3/wav/m4a）、板书 PPT 照片或课堂短视频拖进上传区，填好课堂主题', to: '/studio', toText: '去上传' },
-  { n: 2, title: 'Agent 自动处理', desc: '工作台会按材料类型编排步骤：提取音频 → 抽取关键帧 → 图片理解 → 语音转写 → 融合生成纪要 → 向量入库，全程可视化', to: '', toText: '' },
-  { n: 3, title: '看纪要 · 继续追问', desc: '纪要按「主题 / 知识点 / 定义公式 / 重点问题」等板块生成，每个结论都带录音时间戳或图片页码，随时溯源追问', to: '/qa', toText: '去追问' },
+  { n: 1, title: '上传课堂材料', desc: '进入「课堂纪要」工作台，支持单个文件、多选、整个文件夹或 zip 打包批量上传课堂录音（mp3/wav/m4a）、板书 PPT 照片与课堂短视频；逐份填好课堂主题并归入课程', to: '/studio', toText: '去上传' },
+  { n: 2, title: 'Agent 自动处理', desc: '工作台会按材料类型编排步骤：提取音频 → 抽取关键帧 → 图片理解 → 语音转写 → 融合生成纪要 → 向量入库，全程可视化；多份材料批量排队生成，切换卡片可分别查看进度', to: '', toText: '' },
+  { n: 3, title: '看纪要 · 继续追问', desc: '纪要按「主题 / 知识点 / 定义公式 / 重点问题」等板块生成，每个结论都带录音时间戳或图片页码；在纪要里提问会自动归档为这节课的专属会话，随时溯源追问', to: '/qa', toText: '去追问' },
 ]
 
 const boards = [
-  { icon: 'spark', tint: 'tint-yellow-bold', name: '课堂纪要工作台', desc: '核心板块。多模态上传 + Agent 工作流可视化 + 结构化纪要流式生成，支持中途停止与重新生成，完成后一键导出 Markdown。' },
-  { icon: 'chat', tint: 'tint-mint', name: '智能问答', desc: '知识库优先的多轮问答：先检索课堂纪要作答，覆盖不足时自动补充经审核的外部网络知识并标注「补充自外部知识」。回答下方展示引用来源卡片（录音时间点 / 纪要片段 / 外部网页链接），可点赞 / 重新生成，支持语音提问与附件上传。' },
+  { icon: 'spark', tint: 'tint-yellow-bold', name: '课堂纪要工作台', desc: '核心板块。多模态上传 + Agent 工作流可视化 + 结构化纪要流式生成：支持文件夹 / zip 打包批量上传、多份材料批量排队并逐份设置主题与课程，中途停止即取消排队任务，刷新浏览器不丢上传队列，完成后一键导出 Markdown。' },
+  { icon: 'chat', tint: 'tint-mint', name: '智能问答', desc: '知识库优先的多轮问答：先检索课堂纪要作答，覆盖不足时自动补充经审核的外部网络知识并标注「补充自外部知识」。回答下方展示引用来源卡片（录音时间点 / 纪要片段 / 外部网页链接），可点赞 / 重新生成，支持语音提问与附件上传；每份纪要的提问自动归档为课内专属会话，新对话还会随机推荐不同方向的提问建议。' },
   { icon: 'book', tint: 'tint-sky', name: '我的纪要', desc: '所有课堂纪要的卡片视图：查看回放原文、继续追问、导出 Markdown、删除。工作台新生成的纪要会实时出现在这里。' },
   { icon: 'edit', tint: 'tint-yellow', name: '自创题练习', desc: '基于已完成的课堂纪要自动出题：选择题（随机单选 / 多选 / 不定项）、判断、填空、简答，可按课程与章节筛选；作答后即时批改并展示解析，错题自动进入错题本，支持按章节重练与分页浏览。' },
-  { icon: 'chart', tint: 'tint-lavender', name: '数据看板', desc: '课堂总数、转写时长、关键帧解析量、每日追问趋势、材料类型占比、高频知识点排行与热门追问词云。' },
+  { icon: 'chart', tint: 'tint-lavender', name: '数据看板', desc: '个人学习数据一页看清：课堂总数、累计追问、练习题量、错题数四项指标，加上每日追问趋势、材料类型占比、高频知识点排行与热门追问词云；看板展示的是你本人的学习数据，管理员看到的也是自己的。' },
   { icon: 'sliders', tint: 'tint-peach', name: '个人设置', desc: '维护个人资料、头像、手机号 / 邮箱与登录密码。处理与生成参数由系统统一按最佳配置运行，无需手动调整。' },
   { icon: 'flag', tint: 'tint-rose', name: '问题反馈', desc: '遇到 Bug 或有建议？填写标题与描述、附上截图提交即可，提交后会收到确认提示。' },
   { icon: 'horn', tint: 'tint-lavender', name: '公告管理', desc: '平台公告与最新通知集中查看：新公告通过侧边栏角标与登录弹窗提醒一次，支持搜索与按时间筛选，浏览后角标自动清除。' },
@@ -32,6 +32,11 @@ const DEFAULT_TIPS: string[] = [
   '智能问答输入框支持语音提问与附件上传（图片 / PPT / 文档）；Enter 发送、Shift+Enter 换行',
   '视频材料会自动抽帧并去重，只保留信息量最大的关键帧，无需手动截屏或调参',
   '练习中做错的题会自动收进错题本，点开错题卡片可回看完整题目与解析，按章节重练巩固薄弱点',
+  '多选文件或整个文件夹一次拖入，逐份设置主题与课程后可批量排队生成多份纪要；点左侧卡片随时切换查看每一份的进度与结果',
+  '生成中途刷新浏览器也不怕：上传队列与生成清单会自动恢复现场，继续接着生成',
+  '点「停止生成」会同时取消还在排队的任务；生成中的纪要点击「重新生成」可整体重跑',
+  '在纪要页对某份材料提问，问答侧栏会自动把这节课归档为课内会话，按课程查找历史提问更方便',
+  '数据看板的热门追问词云由你真实提问命中的知识片段聚合而来，标签全部是完整短语，配合高频知识点排行定位薄弱点',
 ]
 const TIP_ICONS = ['link', 'headphones', 'mic', 'refresh', 'edit']
 /** 按技巧的全局序号循环取图标（后端只存文本，图标为展示层装饰） */
@@ -78,6 +83,18 @@ const DEFAULT_FAQS: { q: string; a: string }[] = [
   {
     q: '我的课堂数据安全吗？',
     a: '录音、图片与纪要仅存储在你的课堂知识库中，不会参与任何模型训练；只有你本人能看到自己的课堂内容，可随时删除。',
+  },
+  {
+    q: '一次上传很多文件，怎么生成多份纪要？',
+    a: '多选文件、整个文件夹或 zip 压缩包都会进入上传队列，逐份设置课堂主题与课程后点「开始生成」，系统会按队列依次生成多份相互独立的纪要；期间可点击卡片切换查看各自的进度与内容，点「停止生成」会取消还在排队的任务。',
+  },
+  {
+    q: '为什么问答侧栏会出现课内会话条目？',
+    a: '在纪要页对某份材料提问过，侧栏才会把这节课归档为课内会话（有真实提问记录才显示，单纯生成纪要不会产生会话）；删除会话后从对应纪要再次提问，会话会自动重建。',
+  },
+  {
+    q: '数据看板上的数字和别人看到的一样吗？',
+    a: '不一样。看板展示的是你本人的学习数据（课堂、问答、练习与错题），每个人各看各的；管理员打开自己的看板看到的同样是管理员账号自己的数据。',
   },
 ]
 const faqs = ref(DEFAULT_FAQS.map((f) => ({ ...f })))
@@ -140,8 +157,8 @@ const faqView = ref<{ q: string; a: string } | null>(null)
     <!-- 板块导览 -->
     <h2 class="h3 sec-title">八大板块导览</h2>
     <div class="board-grid">
-      <div v-for="b in boards" :key="b.name" class="board-card" :class="b.tint">
-        <div class="board-icon"><AppIcon :name="b.icon" :size="18" /></div>
+      <div v-for="(b, i) in boards" :key="b.name" class="board-card" :style="{ '--d': `${i * 55}ms` }">
+        <div class="board-icon" :class="b.tint"><AppIcon :name="b.icon" :size="18" /></div>
         <div class="h4">{{ b.name }}</div>
         <p class="board-desc">{{ b.desc }}</p>
       </div>
@@ -219,27 +236,69 @@ const faqView = ref<{ q: string; a: string } | null>(null)
 .head { margin-bottom: 22px; }
 .head .text-md { margin-top: 8px; color: var(--slate); }
 
-/* 三步曲横幅 */
-.banner { border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 32px; }
+/* 三步曲横幅：深色墨面板取代大色块，右侧一团品牌紫微光做呼吸感 */
+.banner {
+  border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 32px;
+  background: linear-gradient(135deg, #121018 0%, #1d1830 58%, #29204a 100%);
+  color: #f5f3fc;
+  box-shadow: 0 12px 32px -16px rgba(23, 18, 42, 0.55);
+  position: relative; overflow: hidden;
+  animation: rise-in 0.4s ease backwards;
+}
+.banner::before {
+  content: ''; position: absolute; top: -40%; right: -12%; width: 340px; height: 340px;
+  background: radial-gradient(closest-side, rgba(126, 96, 255, 0.28), transparent 70%);
+  pointer-events: none;
+}
+.banner > * { position: relative; }
+.banner .h4 { color: #f5f3fc; }
 .banner-head { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; margin-bottom: 20px; }
 .step-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.step { animation: rise-in 0.4s ease backwards; }
+.step:nth-child(2) { animation-delay: 90ms; }
+.step:nth-child(3) { animation-delay: 180ms; }
 .step-num {
-  width: 30px; height: 30px; border-radius: 50%; background: var(--ink-deep); color: var(--on-dark);
+  width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22); color: #fff;
   font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;
 }
-.step-desc { font-size: 13px; color: var(--slate); line-height: 1.65; margin-top: 6px; }
-.step-link { display: inline-block; margin-top: 8px; font-size: 13px; font-weight: 600; }
+.step-desc { font-size: 13px; color: rgba(245, 243, 252, 0.72); line-height: 1.65; margin-top: 6px; }
+.step-link { display: inline-block; margin-top: 8px; font-size: 13px; font-weight: 600; color: #bcaaff; }
+.step-link:hover { color: #d4c6ff; text-decoration: underline; }
 
-/* 板块导览 */
+/* 板块导览：中性白卡 + 细描边 + 底部柔影，颜色只留在图标芯片上；
+   悬浮抬升、图标微放大、逐卡交错入场 */
 .sec-title { margin-bottom: 14px; }
 .board-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }
-.board-card { border-radius: var(--radius-lg); padding: 20px; }
+.board-card {
+  border-radius: var(--radius-lg); padding: 20px;
+  background: var(--canvas); border: 1px solid var(--hairline);
+  box-shadow: 0 1px 2px rgba(28, 25, 51, 0.04), 0 8px 20px -12px rgba(28, 25, 51, 0.14);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  animation: rise-in 0.4s ease backwards;
+  animation-delay: var(--d, 0ms);
+}
+.board-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--hairline-strong);
+  box-shadow: 0 2px 4px rgba(28, 25, 51, 0.05), 0 16px 30px -14px rgba(28, 25, 51, 0.2);
+}
 .board-icon {
   width: 36px; height: 36px; border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.6); display: flex; align-items: center; justify-content: center;
-  margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 12px; transition: transform 0.18s ease;
 }
+.board-card:hover .board-icon { transform: scale(1.08); }
 .board-desc { font-size: 13px; color: var(--slate); line-height: 1.65; margin-top: 6px; }
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner, .banner .step, .board-card { animation: none; }
+  .board-card:hover { transform: none; }
+}
 
 /* 技巧 */
 .tips-card { margin-bottom: 32px; padding: 8px 22px; }
