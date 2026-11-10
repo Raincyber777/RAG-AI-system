@@ -236,7 +236,7 @@ function onDirChange(e: Event) {
   if (!list || !list.length) return
   const groups = new Map<string, { file: File; path?: string }[]>()
   for (const f of Array.from(list)) {
-    const top = f.webkitRelativePath ? f.webkitRelativePath.split('/')[0] : f.name
+    const top = f.webkitRelativePath ? (f.webkitRelativePath.split('/')[0] || f.name) : f.name
     const arr = groups.get(top) || []
     arr.push({ file: f, path: f.webkitRelativePath || undefined })
     groups.set(top, arr)
@@ -623,7 +623,7 @@ function clearAllTimers() {
 /** 后台轮询生成中的材料：done / failed 都同步进 store，全部收敛后停止。
  * 可重复调用追加材料（主材料轮询超时转入后台时复用 / 刷新恢复现场续轮询），已启动的定时器不受影响 */
 const extrasPendingIds = new Set<string>()
-function pollExtras(list: { id: string }[]) {
+function pollExtras(list: { id: number | string }[]) {
   for (const n of list) extrasPendingIds.add(String(n.id))
   extrasPending.value = extrasPendingIds.size
   if (extrasTimer) return // 已在轮询：追加跟踪即可，不重置计数
