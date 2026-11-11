@@ -1,58 +1,57 @@
-# 智源问答 · 用户端
+# 智学纪要 · 用户端
 
-> 基于 RAG（检索增强生成）的企业知识问答系统 —— **让每一次回答都有据可查**。
-> 与「管理员端」为两个独立项目，本仓库为面向普通用户的 **用户端前台**。
+> 多模态课堂知识助手 —— 把课堂音视频与课件，变成可检索、可追问、可出题、可追溯的学习资产。
+> 与「管理端」为两个独立项目，本仓库为面向学生与教师的 **用户端前台**。
+>
+> - 服务端仓库：[Raincyber777/-RAG-Database](https://github.com/Raincyber777/-RAG-Database)
+> - 管理端仓库：[Raincyber777/RAG-admin](https://github.com/Raincyber777/RAG-admin)
 
 ## 快速开始
 
 ```bash
 npm install
-npm run dev      # 开发调试，默认 http://localhost:5173
-npm run build    # 类型检查 + 生产构建
+npm run type-check   # vue-tsc 类型检查（CI 部署前强制执行）
+npm run dev          # 开发调试，默认 http://localhost:5173
+npm run build        # 类型检查 + 生产构建
 ```
 
-演示可直接使用登录页的 **「游客一键体验」**（登录状态存于 localStorage）。
+接口默认走本仓库 Vite 代理（`/api` → `http://127.0.0.1:8080`，即服务端 `python manage.py runserver`）。可选环境变量 `VITE_ADMIN_ORIGIN`：与管理端跨域互通时的管理端站点地址，默认当前站点。
+
+进站需登录（注册 / 登录均支持邮箱验证码；`/login` 提供两种表单）。
 
 ## 功能板块
 
 | 路由 | 页面 | 说明 |
 |---|---|---|
-| `/login` | 登录 / 注册 | 深蓝品牌区 + 登录注册表单 |
-| `/chat` | **智能对话**（核心） | 历史会话列表 · 多模态输入（文本/文件）· 流式回答 · **引用溯源卡片** · 点赞点踩 / 重新生成 |
-| `/knowledge` | **知识库管理** | 知识空间切换/新建 · 拖拽上传 · 文档全生命周期（下载/重命名/删除）· 解析状态实时反馈（排队→切片→向量化→完成/失败） |
-| `/dashboard` | **数据看板** | 系统指标卡 · 每日提问量趋势（ECharts）· 知识空间占比环形图 · 高频词 TOP10 · 热门问题词云 |
-| `/history` | 问答历史 | 历史提问记录、引用来源、按空间筛选 |
-| `/settings` | 个人设置 | 资料维护 · **RAG 参数调优**（回答长度 / Top-K / 引用严格度 / 记忆轮数 / Temperature）· 通知偏好 |
-| `/feedback` | 问题反馈 | Bug / 建议提交，处理进度跟踪 |
-| `/guide` | 使用说明 | 快速上手三步曲 · 板块导览 · 对话技巧 · 常见问题 FAQ |
+| `/login` | 着陆页 / 登录注册 | 产品介绍 + 登录注册（协议勾选、验证码） |
+| `/studio` | **课堂纪要工作台**（核心） | 多模态上传（音频/视频/图片/文档，支持文件夹打包批量）· 逐份设置课堂主题与课程 · Agent 工作流可视化 · 结构化纪要流式生成 · 切换卡片查看各份进度 · 停止生成 / 重新处理 · 刷新保现场（上传队列与生成清单持久化） |
+| `/qa` | **智能问答**（核心） | 知识库优先 + 覆盖不足联网补充 · 流式回答 · 引用溯源卡片（录音时间点/纪要片段/外部网页）· 会话目录（课内会话按材料归档）· 个性化推荐问题（候选池随机抽样）· 语音提问 · 附件问答 · 会话级流式任务（切换会话不断答） |
+| `/notes` | 我的纪要 | 纪要卡片视图：回放原文、继续追问、导出 Markdown、删除 |
+| `/quiz` | 自创题练习 | 基于纪要自动出题（六类题型）、按课程章节筛选、即时批改、错题本与重练 |
+| `/dashboard` | 数据看板 | 个人学习口径：课堂总数/累计追问/练习题量/错题数 + 每日追问趋势、材料类型占比、高频知识点、热门追问词云（ECharts） |
+| `/announcements` | 公告管理 | 平台公告集中查看、已读角标提醒 |
+| `/settings` | 个人设置 | 资料/头像/手机号邮箱换绑（验证码）/密码 |
+| `/feedback` | 问题反馈 | Bug / 建议提交（附截图），处理进度跟踪 |
+| `/guide` | 使用说明 | 快速上手三步曲 · 八大板块导览 · 使用技巧 · 常见问题 FAQ |
 
 ## 目录结构
 
 ```
 src/
-├── assets/design.css        # 设计系统（Notion 风格 Design Tokens + 通用组件类）
-├── router/index.ts          # 路由表（含登录守卫）
+├── assets/design.css        # 设计系统（Design Tokens + 通用组件类）
+├── content/policies.ts      # 《用户协议》/《隐私政策》结构化文档
+├── api/index.ts             # REST + SSE（流式问答）客户端
+├── store/                   # Pinia：auth / notes / 会话等
+├── router/index.ts          # 路由表（登录守卫）
 ├── layouts/AppLayout.vue    # 全局布局（侧边导航 + 内容区）
-├── components/AppIcon.vue   # 内置 SVG 图标库
-├── mock/data.ts             # 模拟数据（可替换为真实接口）
-└── views/                   # 页面组件
-    ├── LoginPage.vue        # 登录注册
-    ├── ChatPage.vue         # 智能对话（核心）
-    ├── KnowledgeBasePage.vue# 知识库管理
-    ├── DashboardPage.vue    # 数据看板
-    ├── HistoryPage.vue      # 问答历史
-    ├── SettingsPage.vue     # 个人设置
-    ├── FeedbackPage.vue     # 问题反馈
-    └── GuidePage.vue        # 使用说明
+├── components/              # AppIcon、AuthModal、PolicyModal、SparkMark 等
+└── views/                   # 页面组件（与上表路由一一对应）
 ```
-
-## 设计规范
-
-UI 基于 Notion 风格设计系统（见 `DESIGN.md`）：深蓝品牌带 `#0a1530`、主 CTA 紫 `#5645d4`、
-粉彩特性卡片（peach/rose/mint/lavender/sky/yellow）、8px 矩形按钮 + 12px 卡片圆角、Inter 字体族。
 
 ## 技术栈
 
-Vue 3.5（`<script setup>` + TypeScript）· Vue Router 4 · ECharts 6 · Vite 8
+Vue 3.5（`<script setup>` + TypeScript）· Vue Router 4 · Pinia · Element Plus · ECharts · JSZip（文件夹打包上传）· Vite
 
-> 当前为纯前端演示，数据来自 `src/mock/data.ts`；对接后端时替换该文件为 API 请求即可。
+## 部署
+
+`git push` 触发 GitHub Actions：`vue-tsc --build` 类型检查通过后构建并自动部署到 ECS Nginx（生产站点 `:8082`）。

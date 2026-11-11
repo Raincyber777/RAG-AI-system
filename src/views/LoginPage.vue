@@ -137,7 +137,7 @@ function switchPolicy(key: PolicyDoc['key']) {
 
         <div class="nav-actions">
           <button class="pill pill-ghost" @click="openAuth('login')">登录</button>
-          <button class="pill pill-primary" @click="openAuth('register')">免费注册</button>
+          <button class="pill pill-primary" @click="openAuth('register')">注册</button>
         </div>
       </div>
     </header>
@@ -244,7 +244,7 @@ function switchPolicy(key: PolicyDoc['key']) {
         <div class="cta-band">
           <h2>把下一堂课，变成可追问的知识库</h2>
           <p>免费注册，几分钟内生成你的第一份课堂纪要</p>
-          <button class="btn btn-primary cta" @click="openAuth('register')">免费注册</button>
+          <button class="btn btn-primary cta" @click="openAuth('register')">注册</button>
         </div>
       </section>
     </main>
