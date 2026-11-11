@@ -11,8 +11,8 @@ push 到 `main` / `txy` 分支即自动构建并发布，无需登录服务器�
 GitHub push
   └─ GitHub Actions：npm ci → npm run build（含类型检查）→ 打包 dist
        └─ SSH 上传 ECS，原子切换发布目录
-            ├─ /var/www/rag-user   ← 用户端（nginx :8082）
-            └─ /var/www/rag-admin  ← 管理端（nginx :8081）
+            ├─ /var/www/rag-user   ← 用户端（nginx :8082 + HTTPS :8443）
+            └─ /var/www/rag-admin  ← 管理端（nginx :8081 + HTTPS :8444）
                   └─ /api、/media → 反代本机 Django(:8080)
 ```
 
@@ -45,22 +45,22 @@ Variables（注意在 **Variables** 标签页，不是 Secrets；两个仓库的
 
 | 仓库 | 名称 | 值 |
 |---|---|---|
-| 用户端 RAG-AI-system | `VITE_ADMIN_ORIGIN` | `http://39.96.61.195:8081` |
-| 管理端 RAG-admin | `VITE_USER_ORIGIN` | `http://39.96.61.195:8082` |
+| 用户端 RAG-AI-system | `VITE_ADMIN_ORIGIN` | `https://39.96.61.195:8444` |
+| 管理端 RAG-admin | `VITE_USER_ORIGIN` | `https://39.96.61.195:8443` |
 
 > 这两个值会编译进前端，用于两端互跳（SSO / 退出回跳），**端口不能漏**。
 > 有域名后改成域名即可。
 
 ### 3. 服务器：nginx 站点配置
 
-把本目录的 `nginx-rag.conf` 上传到服务器（用户端站点监听 **8082 + 8443(HTTPS)**，管理端 **8081**）：
+把本目录的 `nginx-rag.conf` 上传到服务器（用户端站点监听 **8082 + 8443(HTTPS)**，管理端 **8081 + 8444(HTTPS)**）：
 
 ```bash
 scp deploy/nginx-rag.conf root@39.96.61.195:/etc/nginx/conf.d/rag.conf
 ssh root@39.96.61.195 "nginx -t && systemctl reload nginx"
 ```
 
-并在阿里云控制台 **安全组** 放行 **8081 / 8082 / 8443** 入方向（80/443 已被其他项目占用，不要动）。
+并在阿里云控制台 **安全组** 放行 **8081 / 8082 / 8443 / 8444** 入方向（80/443 已被其他项目占用，不要动）。
 Django 部署后其 `ALLOWED_HOSTS` / `CSRF_TRUSTED_ORIGINS` 需包含服务器 IP。
 
 ### 3.1 语音识别需要 HTTPS（自签证书）
@@ -83,8 +83,8 @@ ssh root@39.96.61.195 'mkdir -p /etc/nginx/ssl && openssl req -x509 -nodes -newk
 
 push 代码（或 Actions 页 `workflow_dispatch` 手动跑）后访问：
 
-- 用户端：`http://39.96.61.195:8082`（日常）/ `https://39.96.61.195:8443`（**语音识别必须用这个**，自签证书需信任一次）
-- 管理端：`http://39.96.61.195:8081`
+- 用户端：`https://39.96.61.195:8443`（**语音识别必须用这个**，自签证书需信任一次；http://39.96.61.195:8082 仍并行可用）
+- 管理端：`https://39.96.61.195:8444`（自签证书需信任一次；http://39.96.61.195:8081 仍并行可用）
 
 ## 日常使用
 
